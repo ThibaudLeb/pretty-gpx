@@ -1,4 +1,5 @@
-import type { Config } from "tailwindcss";
+
+import type { Config } from "tailwind-css";
 
 export default {
 	darkMode: ["class"],
@@ -61,6 +62,14 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				// Custom color palette for our GPX application
+				gpx: {
+					primary: '#3B82F6', // Blue
+					secondary: '#10B981', // Green
+					accent: '#F59E0B', // Amber
+					light: '#F0F9FF', // Light blue
+					dark: '#1E293B', // Slate dark
 				}
 			},
 			borderRadius: {
