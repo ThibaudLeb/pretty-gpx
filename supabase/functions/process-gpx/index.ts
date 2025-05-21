@@ -41,53 +41,95 @@ serve(async (req) => {
     const gpxContent = await fileData.text();
     const gpxBase64 = btoa(gpxContent);
 
-    // Call the Docker container with the GPX file and options
-    // In a real implementation, this would be a call to a Docker container running the Pretty GPX Python scripts
-    // For now, we'll use our mock implementation
-
-    // Generate different mock images based on the selected template and color scheme
-    let imageUrl = '';
-    if (options.template === 'minimal') {
-      imageUrl = 'https://images.unsplash.com/photo-1498354178607-a79df2916198?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=800&h=1200&q=80';
-    } else if (options.template === 'detailed') {
-      imageUrl = 'https://images.unsplash.com/photo-1508962914676-134849a727f0?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=800&h=1200&q=80';
-    } else if (options.template === 'topographic') {
-      imageUrl = 'https://images.unsplash.com/photo-1509059852496-f3822ae057bf?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=800&h=1200&q=80';
-    } else {
-      // standard template
-      imageUrl = 'https://images.unsplash.com/photo-1565014904718-25d14337ca1c?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=800&h=1200&q=80';
-    }
-
-    // Extract metadata from the GPX file
-    // In a real implementation, the Docker container would extract this metadata
-    const isLongDistance = file.name.toLowerCase().includes('marathon') || file.name.toLowerCase().includes('long');
-    const isHilly = file.name.toLowerCase().includes('mountain') || file.name.toLowerCase().includes('hill');
+    // In a production environment, this would be the URL of the Docker container
+    // For now, we'll use a simple URL for local development
+    const apiUrl = Deno.env.get("GPX_PROCESSOR_URL") || "http://localhost:8080";
     
-    // Mock response that would come from the Docker container
-    const mockMetadata = {
-      imageUrl: imageUrl,
-      pdfUrl: "https://flowbite.s3.amazonaws.com/blocks/marketing-ui/hero/mockup-1.pdf",
-      metadata: {
-        title: file.name.replace('.gpx', ''),
-        distance: isLongDistance ? 21.5 : 8.3,
-        elevation: isHilly ? 750 : 120,
-        duration: isLongDistance ? "2h 10m" : "45m",
-        date: new Date().toLocaleDateString(),
-      }
-    };
+    console.log(`Calling GPX processor API at: ${apiUrl}`);
+    
+    // Call the Docker container API
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        gpx_content: gpxBase64,
+        options: options
+      }),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Error calling GPX processor: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const processorResponse = await response.json();
+    
+    // Get image and pdf data from the response
+    const { image_data, pdf_data, metadata } = processorResponse;
+    
+    // Save the image and PDF to Supabase storage
+    const imageBase64 = image_data;
+    const pdfBase64 = pdf_data;
+    
+    // Convert base64 strings to Uint8Arrays
+    const imageBytes = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0));
+    const pdfBytes = Uint8Array.from(atob(pdfBase64), c => c.charCodeAt(0));
+    
+    // Generate unique filenames
+    const timestamp = new Date().getTime();
+    const imagePath = `posters/${file.name.replace('.gpx', '')}_${timestamp}.png`;
+    const pdfPath = `posters/${file.name.replace('.gpx', '')}_${timestamp}.pdf`;
+    
+    // Upload the files to storage
+    const { data: imageData, error: imageError } = await supabase
+      .storage
+      .from('gpx-posters')
+      .upload(imagePath, imageBytes, {
+        contentType: 'image/png',
+        upsert: true
+      });
+      
+    if (imageError) {
+      throw new Error(`Error uploading image: ${imageError.message}`);
+    }
+    
+    const { data: pdfData, error: pdfError } = await supabase
+      .storage
+      .from('gpx-posters')
+      .upload(pdfPath, pdfBytes, {
+        contentType: 'application/pdf',
+        upsert: true
+      });
+      
+    if (pdfError) {
+      throw new Error(`Error uploading PDF: ${pdfError.message}`);
+    }
+    
+    // Get public URLs for the uploaded files
+    const { data: { publicUrl: imageUrl } } = supabase
+      .storage
+      .from('gpx-posters')
+      .getPublicUrl(imagePath);
+      
+    const { data: { publicUrl: pdfUrl } } = supabase
+      .storage
+      .from('gpx-posters')
+      .getPublicUrl(pdfPath);
     
     // Record the poster generation in the database
     const { data, error } = await supabase
       .from('gpx_posters')
       .insert({
         original_filename: file.name,
-        image_url: mockMetadata.imageUrl,
-        pdf_url: mockMetadata.pdfUrl,
-        title: mockMetadata.metadata.title,
-        distance: mockMetadata.metadata.distance,
-        elevation: mockMetadata.metadata.elevation,
-        duration: mockMetadata.metadata.duration,
-        date: mockMetadata.metadata.date,
+        image_url: imageUrl,
+        pdf_url: pdfUrl,
+        title: metadata.title,
+        distance: metadata.distance,
+        elevation: metadata.elevation,
+        duration: metadata.duration,
+        date: metadata.date,
         options: options,
         status: 'completed'
       })
@@ -98,7 +140,12 @@ serve(async (req) => {
       throw error;
     }
 
-    return new Response(JSON.stringify(mockMetadata), {
+    // Return the final response with URLs and metadata
+    return new Response(JSON.stringify({
+      imageUrl: imageUrl,
+      pdfUrl: pdfUrl,
+      metadata: metadata
+    }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {

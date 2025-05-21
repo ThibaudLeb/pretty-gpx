@@ -1,2 +1,5 @@
 
-# This is a placeholder file for the Pretty GPX Python package
+# Pretty GPX Python package
+from .generate_poster import generate_poster, extract_metadata
+
+__all__ = ['generate_poster', 'extract_metadata']

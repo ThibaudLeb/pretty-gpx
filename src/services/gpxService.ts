@@ -1,8 +1,9 @@
 
 import { PosterOptions, ApiResponse } from "@/types";
 import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
-export const processGpxFile = async (file: File, options: PosterOptions): Promise<string> => {
+export const processGpxFile = async (file: File, options: PosterOptions): Promise<ApiResponse> => {
   try {
     // Upload file to Supabase Storage
     const fileExt = file.name.split('.').pop();
@@ -42,7 +43,11 @@ export const processGpxFile = async (file: File, options: PosterOptions): Promis
       throw new Error("Error processing GPX file");
     }
 
-    return data.imageUrl;
+    return {
+      imageUrl: data.imageUrl,
+      pdfUrl: data.pdfUrl,
+      metadata: data.metadata
+    };
   } catch (error) {
     console.error("Error in processGpxFile:", error);
     throw error;
@@ -51,8 +56,8 @@ export const processGpxFile = async (file: File, options: PosterOptions): Promis
 
 export const generatePdf = async (imageUrl: string, options: PosterOptions): Promise<string> => {
   // In a real implementation, we might call another edge function or use the same one
-  // For now, we'll just return the PDF URL from our mock data
-  return "https://flowbite.s3.amazonaws.com/blocks/marketing-ui/hero/mockup-1.pdf";
+  // For now, we'll return the PDF URL from our generated data
+  return imageUrl.replace('.png', '.pdf');
 };
 
 export const extractGpxMetadata = async (file: File): Promise<any> => {
@@ -78,30 +83,26 @@ export const extractGpxMetadata = async (file: File): Promise<any> => {
       .from('gpx-files')
       .getPublicUrl(filePath);
 
-    // For now, fallback to basic extraction if the edge function call fails
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      
-      reader.onload = (e) => {
-        const content = e.target?.result as string;
-        
-        // This is a very basic parser and would not work with all GPX files
-        const nameMatch = content.match(/<name>(.*?)<\/name>/);
-        const name = nameMatch ? nameMatch[1] : file.name.replace('.gpx', '');
-        
-        // For now, just return some basic metadata
-        // In the real implementation, this would come from the edge function
-        resolve({
-          title: name,
-          distance: 12.5, // km
-          elevation: 453, // meters
-          duration: "1h 45m",
-          date: new Date().toLocaleDateString(),
-        });
-      };
-      
-      reader.readAsText(file);
+    // Call our edge function with a special flag to only extract metadata
+    const { data, error } = await supabase.functions.invoke('process-gpx', {
+      body: { 
+        file: { 
+          name: file.name,
+          path: filePath,
+          url: publicUrl
+        }, 
+        options: { metadataOnly: true }
+      }
     });
+
+    if (error) {
+      throw new Error("Error extracting metadata: " + error.message);
+    }
+
+    // Clean up the temporary file
+    await supabase.storage.from('gpx-files').remove([filePath]);
+
+    return data.metadata;
   } catch (error) {
     console.error("Error extracting GPX metadata:", error);
     
@@ -132,12 +133,19 @@ export const extractGpxMetadata = async (file: File): Promise<any> => {
 
 export const downloadPosterPdf = async (pdfUrl: string, filename: string) => {
   try {
-    // In a real implementation, we would download the PDF from the URL
-    // For now, we'll simulate a download by opening the URL in a new tab
-    window.open(pdfUrl, "_blank");
+    // Create a hidden anchor element to trigger the download
+    const link = document.createElement('a');
+    link.href = pdfUrl;
+    link.download = filename || 'gpx-poster.pdf';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    toast.success("Your poster has been downloaded!");
     return true;
   } catch (error) {
     console.error("Error downloading PDF:", error);
+    toast.error("Failed to download poster. Please try again.");
     throw error;
   }
 };

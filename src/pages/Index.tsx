@@ -1,4 +1,3 @@
-
 import React, { useState } from "react";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
@@ -12,7 +11,6 @@ import { Download } from "lucide-react";
 import { toast } from "sonner";
 import { PosterOptions as PosterOptionsType, ApiResponse } from "@/types";
 import { processGpxFile, extractGpxMetadata, downloadPosterPdf } from "@/services/gpxService";
-import { supabase } from "@/integrations/supabase/client";
 
 const Index = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -42,11 +40,14 @@ const Index = () => {
       setMetadata(extractedMetadata);
       
       // Process the GPX file using our Supabase function
-      const imageUrl = await processGpxFile(selectedFile, options);
-      setPreviewUrl(imageUrl);
+      const response = await processGpxFile(selectedFile, options);
+      setPreviewUrl(response.imageUrl);
+      setPdfUrl(response.pdfUrl);
       
-      // For now, we'll use a mock PDF URL
-      setPdfUrl("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/hero/mockup-1.pdf");
+      // Update metadata with any additional information from the processor
+      if (response.metadata) {
+        setMetadata(response.metadata);
+      }
       
       toast.success("GPX file processed successfully");
     } catch (error) {
@@ -64,8 +65,14 @@ const Index = () => {
     if (file) {
       setLoading(true);
       try {
-        const imageUrl = await processGpxFile(file, newOptions);
-        setPreviewUrl(imageUrl);
+        const response = await processGpxFile(file, newOptions);
+        setPreviewUrl(response.imageUrl);
+        setPdfUrl(response.pdfUrl);
+        
+        // Update metadata with any additional information from the processor
+        if (response.metadata) {
+          setMetadata(response.metadata);
+        }
       } catch (error) {
         console.error("Error updating preview:", error);
         toast.error("Error updating preview. Please try again.");
