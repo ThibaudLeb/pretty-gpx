@@ -22,3 +22,18 @@ export interface ApiResponse {
     title: string;
   };
 }
+
+export interface ProcessedPoster {
+  id: string;
+  created_at: string;
+  original_filename: string;
+  image_url: string;
+  pdf_url: string;
+  title: string;
+  distance: number;
+  elevation: number;
+  duration: string;
+  date: string;
+  options: PosterOptions;
+  status: 'processing' | 'completed' | 'error';
+}

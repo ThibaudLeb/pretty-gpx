@@ -9,7 +9,69 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
-      [_ in never]: never
+      gpx_posters: {
+        Row: {
+          created_at: string
+          date: string | null
+          distance: number | null
+          duration: string | null
+          elevation: number | null
+          id: string
+          image_url: string | null
+          options: Json
+          original_filename: string
+          pdf_url: string | null
+          status: string
+          title: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          date?: string | null
+          distance?: number | null
+          duration?: string | null
+          elevation?: number | null
+          id?: string
+          image_url?: string | null
+          options: Json
+          original_filename: string
+          pdf_url?: string | null
+          status?: string
+          title?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          date?: string | null
+          distance?: number | null
+          duration?: string | null
+          elevation?: number | null
+          id?: string
+          image_url?: string | null
+          options?: Json
+          original_filename?: string
+          pdf_url?: string | null
+          status?: string
+          title?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      Prettygpxtable: {
+        Row: {
+          created_at: string
+          id: number
+        }
+        Insert: {
+          created_at?: string
+          id?: number
+        }
+        Update: {
+          created_at?: string
+          id?: number
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

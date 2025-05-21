@@ -10,8 +10,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Download } from "lucide-react";
 import { toast } from "sonner";
-import { PosterOptions as PosterOptionsType } from "@/types";
-import { processGpxFile, generatePdf, extractGpxMetadata } from "@/services/gpxService";
+import { PosterOptions as PosterOptionsType, ApiResponse } from "@/types";
+import { processGpxFile, extractGpxMetadata, downloadPosterPdf } from "@/services/gpxService";
+import { supabase } from "@/integrations/supabase/client";
 
 const Index = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -36,17 +37,18 @@ const Index = () => {
     setLoading(true);
     
     try {
-      // Extract metadata from GPX file
+      // Extract basic metadata from GPX file
       const extractedMetadata = await extractGpxMetadata(selectedFile);
       setMetadata(extractedMetadata);
       
-      // Process the GPX file
+      // Process the GPX file using our Supabase function
       const imageUrl = await processGpxFile(selectedFile, options);
       setPreviewUrl(imageUrl);
       
-      // Generate PDF (in a real app, this might be deferred until user clicks download)
-      const pdf = await generatePdf(imageUrl, options);
-      setPdfUrl(pdf);
+      // For now, we'll use a mock PDF URL
+      setPdfUrl("https://flowbite.s3.amazonaws.com/blocks/marketing-ui/hero/mockup-1.pdf");
+      
+      toast.success("GPX file processed successfully");
     } catch (error) {
       console.error("Error processing GPX file:", error);
       toast.error("Error processing GPX file. Please try again.");
@@ -74,19 +76,16 @@ const Index = () => {
   };
 
   const handleDownload = async () => {
-    if (!previewUrl) return;
+    if (!pdfUrl) return;
     
-    toast.success("Generating your PDF poster...");
+    toast.success("Preparing your PDF poster for download...");
     
     try {
-      // In a real app, this would download the PDF file
-      // For now, we'll just simulate it
-      setTimeout(() => {
-        toast.success("Your poster is ready for download!");
-      }, 1500);
+      // Download the PDF using the pdfUrl
+      await downloadPosterPdf(pdfUrl, `${metadata?.title || 'gpx-poster'}.pdf`);
     } catch (error) {
-      console.error("Error generating PDF:", error);
-      toast.error("Error generating PDF. Please try again.");
+      console.error("Error downloading PDF:", error);
+      toast.error("Error downloading PDF. Please try again.");
     }
   };
 
