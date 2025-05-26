@@ -1,7 +1,7 @@
 
 #!/usr/bin/env python3
 """
-Generate a poster from a GPX file
+Generate a poster from a GPX file using matplotlib and reportlab
 """
 import os
 import gpxpy
@@ -16,6 +16,22 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4, LETTER, A3
 from reportlab.lib import colors
 from datetime import datetime, timedelta
+import math
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Calculate the great circle distance between two points on the earth (specified in decimal degrees)"""
+    # Convert decimal degrees to radians
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    
+    # Radius of earth in kilometers
+    r = 6371
+    return c * r
 
 def generate_poster(gpx_file, options):
     """
@@ -40,6 +56,8 @@ def generate_poster(gpx_file, options):
     # Extract coordinates for plotting
     lons = [p[0] for p in points]
     lats = [p[1] for p in points]
+    elevations = [p[2] for p in points if p[2] is not None]
+    times = [p[3] for p in points if p[3] is not None]
     
     # Get metadata for the poster
     metadata = extract_metadata(gpx_file)
@@ -58,71 +76,156 @@ def generate_poster(gpx_file, options):
     # Create the figure with high DPI if requested
     dpi = 300 if options.get('highResolution') else 150
     fig = Figure(figsize=figsize, dpi=dpi)
-    canvas = FigureCanvas(fig)
-    ax = fig.add_subplot(111)
+    canvas_fig = FigureCanvas(fig)
     
     # Set the style based on template and color scheme
-    if options.get('template') == 'minimal':
-        bgcolor = '#f8f9fa'
-        linecolor = '#0077cc' if options.get('colorScheme') == 'default' else '#cc3300'
-        ax.set_facecolor(bgcolor)
-        fig.patch.set_facecolor(bgcolor)
-    elif options.get('template') == 'topographic':
-        bgcolor = '#e6f2e6'
-        linecolor = '#228B22' if options.get('colorScheme') == 'default' else '#8B4513'
-        ax.set_facecolor(bgcolor)
-        fig.patch.set_facecolor(bgcolor)
-    elif options.get('template') == 'detailed':
-        bgcolor = '#f0f0f0'
-        linecolor = '#333333' if options.get('colorScheme') == 'default' else '#800080'
-        ax.set_facecolor(bgcolor)
-        fig.patch.set_facecolor(bgcolor)
-    else:  # Standard
-        bgcolor = 'white'
-        linecolor = '#2196F3' if options.get('colorScheme') == 'default' else '#FF5722'
-        ax.set_facecolor(bgcolor)
-        fig.patch.set_facecolor(bgcolor)
+    template = options.get('template', 'standard')
+    color_scheme = options.get('colorScheme', 'default')
     
-    # Plot the track with the specified line width
+    # Define color schemes
+    color_schemes = {
+        'default': {'bg': 'white', 'line': '#2196F3', 'text': '#333333'},
+        'dark': {'bg': '#1a1a1a', 'line': '#ff6b6b', 'text': '#ffffff'},
+        'green': {'bg': '#f0f8f0', 'line': '#228B22', 'text': '#2d5016'},
+        'blue': {'bg': '#f0f8ff', 'line': '#0077cc', 'text': '#003d66'},
+        'orange': {'bg': '#fff8f0', 'line': '#ff8c00', 'text': '#cc4400'}
+    }
+    
+    colors_used = color_schemes.get(color_scheme, color_schemes['default'])
+    
+    if template == 'minimal':
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(colors_used['bg'])
+        fig.patch.set_facecolor(colors_used['bg'])
+    elif template == 'topographic':
+        ax = fig.add_subplot(111)
+        ax.set_facecolor('#e6f2e6')
+        fig.patch.set_facecolor('#e6f2e6')
+        # Add contour-like background
+        create_topographic_background(ax, lons, lats)
+    elif template == 'detailed':
+        # Create a more complex layout with elevation profile
+        gs = fig.add_gridspec(3, 1, height_ratios=[3, 1, 0.2])
+        ax = fig.add_subplot(gs[0])
+        ax_elev = fig.add_subplot(gs[1])
+        ax.set_facecolor(colors_used['bg'])
+        ax_elev.set_facecolor(colors_used['bg'])
+        fig.patch.set_facecolor(colors_used['bg'])
+    else:  # Standard
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(colors_used['bg'])
+        fig.patch.set_facecolor(colors_used['bg'])
+    
+    # Plot the track with the specified line width and color gradient
     line_width = options.get('lineWidth', 3)
-    ax.plot(lons, lats, color=linecolor, linewidth=line_width, solid_capstyle='round')
+    
+    if template == 'detailed' and elevations:
+        # Create elevation-based color gradient
+        plot_elevation_gradient(ax, lons, lats, elevations, line_width)
+    else:
+        # Simple line plot
+        ax.plot(lons, lats, color=colors_used['line'], linewidth=line_width, 
+                solid_capstyle='round', alpha=0.8)
+    
+    # Add start and end markers
+    if len(points) > 1:
+        ax.plot(lons[0], lats[0], 'o', color='green', markersize=8, label='Start')
+        ax.plot(lons[-1], lats[-1], 's', color='red', markersize=8, label='End')
     
     # Remove axes and set aspect
     ax.set_aspect('equal')
     ax.axis('off')
     
+    # Add padding around the track
+    x_range = max(lons) - min(lons)
+    y_range = max(lats) - min(lats)
+    padding = 0.1  # 10% padding
+    ax.set_xlim(min(lons) - x_range * padding, max(lons) + x_range * padding)
+    ax.set_ylim(min(lats) - y_range * padding, max(lats) + y_range * padding)
+    
     # Add title if requested
     if options.get('showTitle', True):
         title = metadata.get('title', 'GPX Track')
-        fig.suptitle(title, fontsize=16, y=0.98)
+        fig.suptitle(title, fontsize=18, y=0.95, color=colors_used['text'], weight='bold')
     
     # Add statistics if requested
     if options.get('showStats', True):
         stats_text = f"Distance: {metadata['distance']:.1f} km"
         if options.get('showElevation', True) and 'elevation' in metadata:
-            stats_text += f" | Elevation: {metadata['elevation']} m"
+            stats_text += f" • Elevation: {metadata['elevation']} m"
         if 'duration' in metadata:
-            stats_text += f" | Duration: {metadata['duration']}"
+            stats_text += f" • Duration: {metadata['duration']}"
         if 'date' in metadata:
-            stats_text += f" | Date: {metadata['date']}"
+            stats_text += f" • Date: {metadata['date']}"
         
-        fig.text(0.5, 0.02, stats_text, ha='center', fontsize=10)
+        fig.text(0.5, 0.05, stats_text, ha='center', fontsize=12, 
+                color=colors_used['text'], weight='bold')
     
-    # Add padding around the track
-    x_range = max(lons) - min(lons)
-    y_range = max(lats) - min(lats)
-    padding = 0.05  # 5% padding
-    ax.set_xlim(min(lons) - x_range * padding, max(lons) + x_range * padding)
-    ax.set_ylim(min(lats) - y_range * padding, max(lats) + y_range * padding)
+    # Add elevation profile for detailed template
+    if template == 'detailed' and elevations and 'ax_elev' in locals():
+        distances = calculate_cumulative_distances(lons, lats)
+        ax_elev.plot(distances, elevations, color=colors_used['line'], linewidth=2)
+        ax_elev.fill_between(distances, elevations, alpha=0.3, color=colors_used['line'])
+        ax_elev.set_xlabel('Distance (km)', color=colors_used['text'])
+        ax_elev.set_ylabel('Elevation (m)', color=colors_used['text'])
+        ax_elev.grid(True, alpha=0.3)
+        ax_elev.tick_params(colors=colors_used['text'])
     
     # Save the image to a temporary file
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_img:
         image_path = temp_img.name
-        fig.savefig(image_path, bbox_inches='tight', pad_inches=0.5, dpi=dpi)
+        fig.savefig(image_path, bbox_inches='tight', pad_inches=0.5, dpi=dpi, 
+                   facecolor=colors_used['bg'])
     
     # Generate PDF with ReportLab
     pdf_path = image_path.replace('.png', '.pdf')
+    create_pdf_poster(pdf_path, image_path, metadata, options, pdf_size, colors_used)
     
+    return image_path, pdf_path
+
+def create_topographic_background(ax, lons, lats):
+    """Create a topographic-style background"""
+    x_min, x_max = min(lons), max(lons)
+    y_min, y_max = min(lats), max(lats)
+    
+    # Create a grid for contour lines
+    x = np.linspace(x_min, x_max, 20)
+    y = np.linspace(y_min, y_max, 20)
+    X, Y = np.meshgrid(x, y)
+    
+    # Create some artificial elevation data for contours
+    Z = np.sin(X * 50) * np.cos(Y * 50) + np.random.random(X.shape) * 0.1
+    
+    # Add subtle contour lines
+    ax.contour(X, Y, Z, levels=10, colors='gray', alpha=0.2, linewidths=0.5)
+
+def plot_elevation_gradient(ax, lons, lats, elevations, line_width):
+    """Plot track with elevation-based color gradient"""
+    points = np.array([lons, lats]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    
+    from matplotlib.collections import LineCollection
+    
+    # Normalize elevations for color mapping
+    norm = plt.Normalize(min(elevations), max(elevations))
+    lc = LineCollection(segments, cmap='terrain', norm=norm, linewidths=line_width)
+    lc.set_array(np.array(elevations[:-1]))
+    ax.add_collection(lc)
+
+def calculate_cumulative_distances(lons, lats):
+    """Calculate cumulative distances along the track"""
+    distances = [0]
+    total_distance = 0
+    
+    for i in range(1, len(lons)):
+        dist = haversine_distance(lats[i-1], lons[i-1], lats[i], lons[i])
+        total_distance += dist
+        distances.append(total_distance)
+    
+    return distances
+
+def create_pdf_poster(pdf_path, image_path, metadata, options, pdf_size, colors_used):
+    """Create a PDF version of the poster"""
     # Create PDF with the same dimensions
     if options.get('orientation') == 'landscape':
         pdf_size = pdf_size[::-1]  # Swap width and height for landscape
@@ -131,10 +234,10 @@ def generate_poster(gpx_file, options):
     
     # Add the image to the PDF
     img = Image.open(image_path)
-    # Calculate the scale to fit the image to the PDF page
     width, height = pdf_size
     img_width, img_height = img.size
     
+    # Calculate the scale to fit the image to the PDF page
     scale = min(width / img_width, height / img_height) * 0.9
     img_width *= scale
     img_height *= scale
@@ -146,35 +249,22 @@ def generate_poster(gpx_file, options):
     # Draw the image
     c.drawImage(image_path, x, y, width=img_width, height=img_height)
     
-    # Add metadata to the PDF
-    if options.get('showTitle', True):
-        c.setFont("Helvetica-Bold", 16)
-        c.drawCentredString(width / 2, height - 50, metadata.get('title', 'GPX Track'))
+    # Add a subtle border
+    c.setStrokeColor(colors.grey)
+    c.setLineWidth(1)
+    c.rect(x-5, y-5, img_width+10, img_height+10)
     
-    if options.get('showStats', True):
-        c.setFont("Helvetica", 10)
-        stats_text = f"Distance: {metadata['distance']:.1f} km"
-        if options.get('showElevation', True) and 'elevation' in metadata:
-            stats_text += f" | Elevation: {metadata['elevation']} m"
-        if 'duration' in metadata:
-            stats_text += f" | Duration: {metadata['duration']}"
-        if 'date' in metadata:
-            stats_text += f" | Date: {metadata['date']}"
-        
-        c.drawCentredString(width / 2, 40, stats_text)
-    
-    # Add a "Generated by Pretty GPX" footer
+    # Add "Generated by Pretty GPX" footer
     c.setFont("Helvetica", 8)
-    c.drawCentredString(width / 2, 20, "Generated by Pretty GPX")
+    c.setFillColor(colors.grey)
+    c.drawCentredString(width / 2, 15, "Generated by Pretty GPX")
     
     # Save the PDF
     c.save()
-    
-    return image_path, pdf_path
 
 def extract_metadata(gpx_file):
     """
-    Extract metadata from a GPX file
+    Extract comprehensive metadata from a GPX file
     """
     print(f"Extracting metadata from {gpx_file}")
     
@@ -190,7 +280,7 @@ def extract_metadata(gpx_file):
         "date": datetime.now().strftime("%Y-%m-%d"),
     }
     
-    # Calculate total distance
+    # Calculate total distance and elevation
     total_distance = 0
     min_elevation = float('inf')
     max_elevation = float('-inf')
@@ -198,11 +288,11 @@ def extract_metadata(gpx_file):
     end_time = None
     
     for track in gpx.tracks:
+        # Get track name if available
+        if track.name:
+            metadata["title"] = track.name
+            
         for segment in track.segments:
-            # Get track name if available
-            if track.name and not metadata["title"]:
-                metadata["title"] = track.name
-                
             # Get start and end times if available
             if segment.points and segment.points[0].time:
                 if start_time is None or segment.points[0].time < start_time:
@@ -217,8 +307,11 @@ def extract_metadata(gpx_file):
                 p1 = segment.points[i]
                 p2 = segment.points[i + 1]
                 
-                # Add distance between consecutive points
-                total_distance += p1.distance_2d(p2)
+                # Calculate distance using haversine formula
+                if p1.latitude and p1.longitude and p2.latitude and p2.longitude:
+                    dist = haversine_distance(p1.latitude, p1.longitude, 
+                                            p2.latitude, p2.longitude)
+                    total_distance += dist
                 
                 # Track elevation
                 if p1.elevation is not None:
@@ -230,8 +323,8 @@ def extract_metadata(gpx_file):
                 min_elevation = min(min_elevation, segment.points[-1].elevation)
                 max_elevation = max(max_elevation, segment.points[-1].elevation)
     
-    # Convert distance to kilometers
-    metadata["distance"] = total_distance / 1000
+    # Set calculated values
+    metadata["distance"] = total_distance
     
     # Calculate elevation gain (if valid elevations were found)
     if min_elevation != float('inf') and max_elevation != float('-inf'):

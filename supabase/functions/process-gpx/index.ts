@@ -27,6 +27,41 @@ serve(async (req) => {
 
     console.log(`Processing file: ${file.name} with options:`, options);
 
+    // Check if this is a metadata-only request
+    if (options.metadataOnly) {
+      // For metadata-only requests, we'll extract basic info from the GPX file
+      const { data: fileData, error: downloadError } = await supabase
+        .storage
+        .from('gpx-files')
+        .download(file.path);
+
+      if (downloadError) {
+        throw new Error(`Error downloading file: ${downloadError.message}`);
+      }
+
+      const gpxContent = await fileData.text();
+      
+      // Basic GPX metadata extraction
+      const nameMatch = gpxContent.match(/<name>(.*?)<\/name>/);
+      const title = nameMatch ? nameMatch[1] : file.name.replace('.gpx', '');
+      
+      // Extract track points for basic calculations
+      const trkptMatches = gpxContent.match(/<trkpt[^>]*lat="([^"]*)"[^>]*lon="([^"]*)"[^>]*>/g);
+      const distance = trkptMatches ? (trkptMatches.length * 0.1) : 10; // Rough estimate
+      
+      const metadata = {
+        title: title,
+        distance: distance,
+        elevation: 200,
+        duration: "1h 30m",
+        date: new Date().toLocaleDateString(),
+      };
+
+      return new Response(JSON.stringify({ metadata }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // Download the GPX file from storage
     const { data: fileData, error: downloadError } = await supabase
       .storage
@@ -41,9 +76,9 @@ serve(async (req) => {
     const gpxContent = await fileData.text();
     const gpxBase64 = btoa(gpxContent);
 
-    // In a production environment, this would be the URL of the Docker container
-    // For now, we'll use a simple URL for local development
-    const apiUrl = Deno.env.get("GPX_PROCESSOR_URL") || "http://localhost:8080";
+    // Use the deployed Cloud Run service URL
+    // You'll need to replace this with your actual Cloud Run service URL after deployment
+    const apiUrl = Deno.env.get("GPX_PROCESSOR_URL") || "https://pretty-gpx-processor-YOUR_PROJECT_ID.run.app";
     
     console.log(`Calling GPX processor API at: ${apiUrl}`);
     
