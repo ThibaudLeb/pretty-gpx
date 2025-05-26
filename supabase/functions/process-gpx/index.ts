@@ -76,33 +76,65 @@ serve(async (req) => {
     const gpxContent = await fileData.text();
     const gpxBase64 = btoa(gpxContent);
 
-    // Use the deployed Cloud Run service URL
-    // You'll need to replace this with your actual Cloud Run service URL after deployment
-    const apiUrl = Deno.env.get("GPX_PROCESSOR_URL") || "https://pretty-gpx-processor-YOUR_PROJECT_ID.run.app";
+    // Get the Cloud Run service URL from environment
+    const apiUrl = Deno.env.get("GPX_PROCESSOR_URL");
+    
+    if (!apiUrl) {
+      throw new Error("GPX_PROCESSOR_URL environment variable is not set. Please configure it in the Supabase Edge Functions secrets.");
+    }
     
     console.log(`Calling GPX processor API at: ${apiUrl}`);
     
-    // Call the Docker container API
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        gpx_content: gpxBase64,
-        options: options
-      }),
-    });
+    // Call the Docker container API with better error handling
+    let response;
+    try {
+      response = await fetch(`${apiUrl}/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Supabase-Edge-Function/1.0',
+        },
+        body: JSON.stringify({
+          gpx_content: gpxBase64,
+          options: options
+        }),
+      });
+    } catch (fetchError) {
+      console.error("Network error calling GPX processor:", fetchError);
+      throw new Error(`Network error calling GPX processor: ${fetchError.message}`);
+    }
+    
+    console.log(`GPX processor response status: ${response.status}`);
     
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Error calling GPX processor: ${response.status} ${response.statusText} - ${errorText}`);
+      console.error(`GPX processor error response: ${errorText}`);
+      
+      if (response.status === 403) {
+        throw new Error(`Access denied to GPX processor. Please ensure the Cloud Run service allows unauthenticated requests. Status: ${response.status}`);
+      } else if (response.status === 404) {
+        throw new Error(`GPX processor service not found. Please check the GPX_PROCESSOR_URL. Status: ${response.status}`);
+      } else {
+        throw new Error(`GPX processor error (${response.status}): ${errorText}`);
+      }
     }
     
-    const processorResponse = await response.json();
+    let processorResponse;
+    try {
+      processorResponse = await response.json();
+    } catch (jsonError) {
+      console.error("Error parsing GPX processor response:", jsonError);
+      throw new Error("Invalid response from GPX processor - not valid JSON");
+    }
+    
+    console.log("GPX processor response received successfully");
     
     // Get image and pdf data from the response
     const { image_data, pdf_data, metadata } = processorResponse;
+    
+    if (!image_data || !pdf_data) {
+      throw new Error("GPX processor did not return image or PDF data");
+    }
     
     // Save the image and PDF to Supabase storage
     const imageBase64 = image_data;
@@ -127,6 +159,7 @@ serve(async (req) => {
       });
       
     if (imageError) {
+      console.error("Error uploading image:", imageError);
       throw new Error(`Error uploading image: ${imageError.message}`);
     }
     
@@ -139,6 +172,7 @@ serve(async (req) => {
       });
       
     if (pdfError) {
+      console.error("Error uploading PDF:", pdfError);
       throw new Error(`Error uploading PDF: ${pdfError.message}`);
     }
     
@@ -172,8 +206,11 @@ serve(async (req) => {
       .single();
     
     if (error) {
-      throw error;
+      console.error("Error saving to database:", error);
+      throw new Error(`Error saving to database: ${error.message}`);
     }
+
+    console.log("Successfully processed GPX file and saved to database");
 
     // Return the final response with URLs and metadata
     return new Response(JSON.stringify({
@@ -185,7 +222,10 @@ serve(async (req) => {
     });
   } catch (error) {
     console.error("Error processing GPX file:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      details: "Check the edge function logs for more information"
+    }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
