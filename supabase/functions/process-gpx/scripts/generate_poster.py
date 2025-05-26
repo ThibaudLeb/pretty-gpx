@@ -62,6 +62,14 @@ def generate_poster(gpx_file, options):
     # Get metadata for the poster
     metadata = extract_metadata(gpx_file)
     
+    # Override metadata with racer-specific information if provided
+    racer_info = options.get('racerInfo', {})
+    if racer_info:
+        metadata['title'] = racer_info.get('raceName', metadata['title'])
+        metadata['duration'] = racer_info.get('duration', metadata['duration'])
+        metadata['racer_name'] = racer_info.get('name', '')
+        metadata['ranking'] = racer_info.get('ranking', '')
+    
     # Create a figure with the right size based on options
     if options.get('paperSize') == 'a3':
         figsize = (11.7, 16.5) if options.get('orientation') == 'portrait' else (16.5, 11.7)
@@ -93,28 +101,38 @@ def generate_poster(gpx_file, options):
     
     colors_used = color_schemes.get(color_scheme, color_schemes['default'])
     
-    if template == 'minimal':
-        ax = fig.add_subplot(111)
-        ax.set_facecolor(colors_used['bg'])
-        fig.patch.set_facecolor(colors_used['bg'])
-    elif template == 'topographic':
-        ax = fig.add_subplot(111)
-        ax.set_facecolor('#e6f2e6')
-        fig.patch.set_facecolor('#e6f2e6')
-        # Add contour-like background
+    # Create layout based on whether racer info should be shown
+    show_racer_info = options.get('showRacerInfo', False) and racer_info
+    
+    if show_racer_info:
+        # Create layout with space for racer information
+        gs = fig.add_gridspec(4, 1, height_ratios=[0.3, 3, 1, 0.3])
+        ax_header = fig.add_subplot(gs[0])
+        ax = fig.add_subplot(gs[1])
+        ax_stats = fig.add_subplot(gs[2])
+        ax_footer = fig.add_subplot(gs[3])
+        
+        # Configure all subplots
+        for subplot in [ax_header, ax, ax_stats, ax_footer]:
+            subplot.set_facecolor(colors_used['bg'])
+            subplot.axis('off')
+    else:
+        # Standard layout
+        if template == 'detailed' and elevations:
+            gs = fig.add_gridspec(3, 1, height_ratios=[3, 1, 0.2])
+            ax = fig.add_subplot(gs[0])
+            ax_elev = fig.add_subplot(gs[1])
+            ax.set_facecolor(colors_used['bg'])
+            ax_elev.set_facecolor(colors_used['bg'])
+        else:
+            ax = fig.add_subplot(111)
+            ax.set_facecolor(colors_used['bg'])
+    
+    fig.patch.set_facecolor(colors_used['bg'])
+    
+    # Add topographic background for topographic template
+    if template == 'topographic':
         create_topographic_background(ax, lons, lats)
-    elif template == 'detailed':
-        # Create a more complex layout with elevation profile
-        gs = fig.add_gridspec(3, 1, height_ratios=[3, 1, 0.2])
-        ax = fig.add_subplot(gs[0])
-        ax_elev = fig.add_subplot(gs[1])
-        ax.set_facecolor(colors_used['bg'])
-        ax_elev.set_facecolor(colors_used['bg'])
-        fig.patch.set_facecolor(colors_used['bg'])
-    else:  # Standard
-        ax = fig.add_subplot(111)
-        ax.set_facecolor(colors_used['bg'])
-        fig.patch.set_facecolor(colors_used['bg'])
     
     # Plot the track with the specified line width and color gradient
     line_width = options.get('lineWidth', 3)
@@ -143,13 +161,42 @@ def generate_poster(gpx_file, options):
     ax.set_xlim(min(lons) - x_range * padding, max(lons) + x_range * padding)
     ax.set_ylim(min(lats) - y_range * padding, max(lats) + y_range * padding)
     
-    # Add title if requested
-    if options.get('showTitle', True):
+    # Add racer-specific header information
+    if show_racer_info and 'ax_header' in locals():
+        ax_header.text(0.5, 0.7, metadata.get('racer_name', ''), 
+                      ha='center', va='center', fontsize=20, weight='bold',
+                      color=colors_used['text'], transform=ax_header.transAxes)
+        ax_header.text(0.5, 0.3, f"Ranking: #{metadata.get('ranking', 'N/A')}", 
+                      ha='center', va='center', fontsize=14,
+                      color=colors_used['text'], transform=ax_header.transAxes)
+    elif options.get('showTitle', True):
+        # Standard title
         title = metadata.get('title', 'GPX Track')
         fig.suptitle(title, fontsize=18, y=0.95, color=colors_used['text'], weight='bold')
     
-    # Add statistics if requested
-    if options.get('showStats', True):
+    # Add comprehensive statistics
+    if show_racer_info and 'ax_stats' in locals():
+        # Create detailed stats layout for race info
+        stats_lines = [
+            f"Race: {metadata.get('title', 'N/A')}",
+            f"Duration: {metadata.get('duration', 'N/A')}",
+            f"Distance: {metadata.get('distance', 0):.1f} km",
+        ]
+        
+        if options.get('showElevation', True) and 'elevation' in metadata:
+            stats_lines.append(f"Elevation Gain: {metadata['elevation']} m")
+        
+        if 'date' in metadata:
+            stats_lines.append(f"Date: {metadata['date']}")
+        
+        # Display stats in a grid
+        for i, line in enumerate(stats_lines):
+            y_pos = 0.8 - (i * 0.15)
+            ax_stats.text(0.1, y_pos, line, ha='left', va='center', 
+                         fontsize=12, color=colors_used['text'], 
+                         weight='bold', transform=ax_stats.transAxes)
+    elif options.get('showStats', True):
+        # Standard stats at bottom
         stats_text = f"Distance: {metadata['distance']:.1f} km"
         if options.get('showElevation', True) and 'elevation' in metadata:
             stats_text += f" • Elevation: {metadata['elevation']} m"
@@ -171,6 +218,13 @@ def generate_poster(gpx_file, options):
         ax_elev.grid(True, alpha=0.3)
         ax_elev.tick_params(colors=colors_used['text'])
     
+    # Add footer with generation info
+    if show_racer_info and 'ax_footer' in locals():
+        ax_footer.text(0.5, 0.5, "Generated by Pretty GPX", 
+                      ha='center', va='center', fontsize=8, 
+                      color=colors_used['text'], alpha=0.7,
+                      transform=ax_footer.transAxes)
+    
     # Save the image to a temporary file
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_img:
         image_path = temp_img.name
@@ -182,6 +236,8 @@ def generate_poster(gpx_file, options):
     create_pdf_poster(pdf_path, image_path, metadata, options, pdf_size, colors_used)
     
     return image_path, pdf_path
+
+# ... keep existing code (create_topographic_background, plot_elevation_gradient, calculate_cumulative_distances, create_pdf_poster, extract_metadata functions remain the same)
 
 def create_topographic_background(ax, lons, lats):
     """Create a topographic-style background"""
