@@ -40,7 +40,7 @@ const FileUpload = ({ onFileSelected }: FileUploadProps) => {
   };
 
   const validateAndProcessFile = (file: File) => {
-    if (file.name.endsWith('.gpx')) {
+    if (file.name.toLowerCase().endsWith('.gpx')) {
       onFileSelected(file);
       toast.success(`File uploaded: ${file.name}`);
     } else {
@@ -55,7 +55,7 @@ const FileUpload = ({ onFileSelected }: FileUploadProps) => {
   return (
     <Card 
       className={`p-8 border-2 border-dashed cursor-pointer transition-colors ${
-        isDragging ? "border-gpx-primary bg-blue-50" : "border-gray-300"
+        isDragging ? "border-blue-500 bg-blue-50" : "border-gray-300"
       }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -64,7 +64,7 @@ const FileUpload = ({ onFileSelected }: FileUploadProps) => {
     >
       <div className="flex flex-col items-center justify-center gap-4 text-center">
         <div className="rounded-full bg-blue-50 p-3">
-          <Upload className="h-8 w-8 text-gpx-primary" />
+          <Upload className="h-8 w-8 text-blue-500" />
         </div>
         <div>
           <p className="text-xl font-medium">Drag & Drop your GPX file here</p>
@@ -72,7 +72,7 @@ const FileUpload = ({ onFileSelected }: FileUploadProps) => {
             or click to browse your files
           </p>
         </div>
-        <Button className="mt-2 bg-gpx-primary hover:bg-blue-600">
+        <Button className="mt-2 bg-blue-500 hover:bg-blue-600">
           Select GPX File
         </Button>
         <input 
