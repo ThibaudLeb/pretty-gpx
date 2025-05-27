@@ -21,8 +21,6 @@ interface RacerData {
 }
 
 interface EmailConfig {
-  senderEmail: string;
-  senderPassword: string;
   subject: string;
   template: string;
 }
@@ -47,6 +45,13 @@ serve(async (req) => {
   try {
     const { racerData, gpxFile, emailConfig, posterOptions } = await req.json();
     
+    console.log('Received request with:', {
+      racerCount: racerData?.length,
+      gpxFileName: gpxFile?.name,
+      hasEmailConfig: !!emailConfig,
+      hasPosterOptions: !!posterOptions
+    });
+
     // Initialize Supabase client
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? '';
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? '';
@@ -55,6 +60,7 @@ serve(async (req) => {
     // Initialize Resend
     const resendApiKey = Deno.env.get("RESEND_API_KEY");
     if (!resendApiKey) {
+      console.error("RESEND_API_KEY environment variable is not set");
       throw new Error("RESEND_API_KEY environment variable is not set");
     }
     const resend = new Resend(resendApiKey);
@@ -68,7 +74,7 @@ serve(async (req) => {
     // Process each racer
     for (const racer of racerData) {
       try {
-        console.log(`Processing racer: ${racer.firstName} ${racer.lastName}`);
+        console.log(`Processing racer: ${racer.firstName} ${racer.lastName} (${racer.email})`);
 
         // Generate personalized poster for this racer
         const posterResult = await generatePersonalizedPoster(
@@ -79,8 +85,14 @@ serve(async (req) => {
         );
 
         if (!posterResult.success) {
+          console.error(`Failed to generate poster for ${racer.email}:`, posterResult.error);
           throw new Error(`Failed to generate poster: ${posterResult.error}`);
         }
+
+        console.log(`Generated poster for ${racer.email}:`, {
+          imageUrl: posterResult.imageUrl,
+          pdfUrl: posterResult.pdfUrl
+        });
 
         // Send personalized email with poster attachment
         const emailResult = await sendPersonalizedEmail(
@@ -93,11 +105,11 @@ serve(async (req) => {
 
         if (emailResult.success) {
           successful++;
-          console.log(`✓ Email sent to ${racer.email}`);
+          console.log(`✓ Email sent successfully to ${racer.email}`);
         } else {
           failed++;
           failedEmails.push(racer.email);
-          console.error(`✗ Failed to send email to ${racer.email}: ${emailResult.error}`);
+          console.error(`✗ Failed to send email to ${racer.email}:`, emailResult.error);
         }
 
         // Small delay to avoid overwhelming the email service
@@ -142,6 +154,8 @@ async function generatePersonalizedPoster(
   supabase: any
 ): Promise<{ success: boolean; pdfUrl?: string; imageUrl?: string; error?: string }> {
   try {
+    console.log(`Generating poster for ${racer.firstName} ${racer.lastName}`);
+    
     // Upload GPX file to storage
     const gpxContent = atob(gpxFile.content);
     const fileName = `race_${Date.now()}_${racer.firstName}_${racer.lastName}.gpx`;
@@ -152,8 +166,11 @@ async function generatePersonalizedPoster(
       .upload(fileName, gpxContent, { contentType: 'application/gpx+xml' });
 
     if (uploadError) {
+      console.error(`Upload error for ${racer.email}:`, uploadError);
       throw new Error(`Upload error: ${uploadError.message}`);
     }
+
+    console.log(`GPX file uploaded for ${racer.email}:`, fileName);
 
     // Get public URL
     const { data: { publicUrl } } = supabase
@@ -178,6 +195,7 @@ async function generatePersonalizedPoster(
       throw new Error("GPX_PROCESSOR_URL not configured");
     }
 
+    console.log(`Calling GPX processor for ${racer.email}`);
     const response = await fetch(`${apiUrl}/`, {
       method: 'POST',
       headers: {
@@ -190,15 +208,20 @@ async function generatePersonalizedPoster(
     });
 
     if (!response.ok) {
-      throw new Error(`GPX processor error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`GPX processor error for ${racer.email}:`, response.status, errorText);
+      throw new Error(`GPX processor error: ${response.status} - ${errorText}`);
     }
 
     const processorResponse = await response.json();
     const { image_data, pdf_data } = processorResponse;
 
     if (!image_data || !pdf_data) {
+      console.error(`Missing data from processor for ${racer.email}:`, { hasImage: !!image_data, hasPdf: !!pdf_data });
       throw new Error("Missing image or PDF data from processor");
     }
+
+    console.log(`GPX processing completed for ${racer.email}`);
 
     // Save generated files to storage
     const timestamp = Date.now();
@@ -222,8 +245,14 @@ async function generatePersonalizedPoster(
     ]);
 
     if (imageUpload.error || pdfUpload.error) {
+      console.error(`Error uploading files for ${racer.email}:`, { 
+        imageError: imageUpload.error, 
+        pdfError: pdfUpload.error 
+      });
       throw new Error("Error uploading generated files");
     }
+
+    console.log(`Files uploaded successfully for ${racer.email}`);
 
     // Get public URLs
     const { data: { publicUrl: imageUrl } } = supabase
@@ -250,12 +279,18 @@ async function sendPersonalizedEmail(
   resend: any
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    console.log(`Sending email to ${racer.email}`);
+
     // Replace placeholders in subject and template
     const personalizedSubject = replacePlaceholders(emailConfig.subject, racer);
     const personalizedBody = replacePlaceholders(emailConfig.template, racer);
 
     // Download PDF for attachment
     const pdfResponse = await fetch(pdfUrl);
+    if (!pdfResponse.ok) {
+      throw new Error(`Failed to download PDF: ${pdfResponse.status}`);
+    }
+    
     const pdfBuffer = await pdfResponse.arrayBuffer();
     const pdfBase64 = btoa(String.fromCharCode(...new Uint8Array(pdfBuffer)));
 
@@ -286,6 +321,7 @@ async function sendPersonalizedEmail(
     });
 
     if (emailResponse.error) {
+      console.error(`Resend API error for ${racer.email}:`, emailResponse.error);
       throw new Error(emailResponse.error.message);
     }
 
