@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
-import { Mail, Send, AlertCircle, CheckCircle, XCircle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Mail, Send, AlertCircle, CheckCircle, XCircle, Settings } from "lucide-react";
 import { toast } from "sonner";
 import { RacerData, CampaignProgress } from "@/types/race-organizer";
 import { supabase } from "@/integrations/supabase/client";
@@ -53,7 +54,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
     setCampaignResults(null);
 
     try {
-      console.log("Starting email campaign for", racerData.length, "racers");
+      console.log("Starting Gmail email campaign for", racerData.length, "racers");
 
       const { data, error } = await supabase.functions.invoke('send-race-emails', {
         body: {
@@ -97,19 +98,24 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
         failedEmails: data.failedEmails || []
       });
 
-      toast.success(`Email campaign completed! Sent ${data.successful} emails successfully.`);
+      toast.success(`Gmail email campaign completed! Sent ${data.successful} emails successfully.`);
       
       if (data.failed > 0) {
         toast.error(`${data.failed} emails failed to send. Check the results below for details.`);
       }
 
     } catch (error) {
-      console.error("Error starting email campaign:", error);
+      console.error("Error starting Gmail email campaign:", error);
       setProgress(prev => ({
         ...prev,
         status: 'error'
       }));
-      toast.error(`Failed to start email campaign: ${error.message}`);
+      
+      if (error.message.includes('Gmail OAuth credentials')) {
+        toast.error("Gmail is not properly configured. Please set up your Gmail credentials first.");
+      } else {
+        toast.error(`Failed to start email campaign: ${error.message}`);
+      }
     }
   };
 
@@ -129,6 +135,16 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
 
   return (
     <div className="space-y-6">
+      {/* Gmail Setup Notice */}
+      <Alert>
+        <Settings className="h-4 w-4" />
+        <AlertDescription>
+          <strong>Using Gmail:</strong> This system now uses Gmail to send emails. 
+          Make sure you have configured your Gmail OAuth credentials in your Supabase project secrets: 
+          GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN.
+        </AlertDescription>
+      </Alert>
+
       {racerData.length === 0 || !gpxFile ? (
         <Card className="p-6">
           <div className="flex items-center space-x-3 text-amber-600">
@@ -208,7 +224,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
           {/* Campaign Status */}
           <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-medium">Campaign Status</h3>
+              <h3 className="text-lg font-medium">Gmail Campaign Status</h3>
               <div className="flex items-center space-x-2">
                 <Mail className="h-5 w-5 text-blue-500" />
                 <span className="text-sm text-muted-foreground">
@@ -226,7 +242,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
                 <Progress value={progressPercentage} className="w-full" />
                 {progress.status === 'processing' && (
                   <p className="text-sm text-blue-600">
-                    Processing emails... This may take a few minutes.
+                    Sending emails via Gmail... This may take a few minutes.
                   </p>
                 )}
               </div>
@@ -237,7 +253,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
                 <div className="flex items-center space-x-2 text-green-600">
                   <CheckCircle className="h-4 w-4" />
                   <span className="text-sm font-medium">
-                    {campaignResults.successful} emails sent successfully
+                    {campaignResults.successful} emails sent successfully via Gmail
                   </span>
                 </div>
                 {campaignResults.failed > 0 && (
@@ -271,14 +287,15 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
             >
               <Send className="h-4 w-4 mr-2" />
               {progress.status === 'processing' 
-                ? 'Sending Emails...' 
-                : `Send ${racerData.length} Personalized Emails`
+                ? 'Sending via Gmail...' 
+                : `Send ${racerData.length} Emails via Gmail`
               }
             </Button>
 
             <div className="mt-4 p-3 bg-blue-50 rounded-lg">
               <p className="text-sm text-blue-800">
-                <strong>Note:</strong> This will generate personalized GPX posters for each racer and send them via email with their race results. Make sure you have configured the RESEND_API_KEY in your Supabase project settings.
+                <strong>Note:</strong> This will generate personalized GPX posters for each racer and send them via your Gmail account. 
+                Make sure you have configured the Gmail OAuth credentials (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) in your Supabase project settings.
               </p>
             </div>
           </Card>

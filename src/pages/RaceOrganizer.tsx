@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import CsvUpload from "@/components/race-organizer/CsvUpload";
 import EmailCampaign from "@/components/race-organizer/EmailCampaign";
+import GmailSetup from "@/components/race-organizer/GmailSetup";
 import { RacerData } from "@/types/race-organizer";
 
 const RaceOrganizer = () => {
@@ -18,20 +19,32 @@ const RaceOrganizer = () => {
             Race Organizer Dashboard
           </h1>
           <p className="text-xl text-muted-foreground">
-            Send personalized GPX posters to your race attendees
+            Send personalized GPX posters to your race attendees via Gmail
           </p>
         </div>
 
-        <Tabs defaultValue="data" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+        <Tabs defaultValue="setup" className="w-full">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="setup">Gmail Setup</TabsTrigger>
             <TabsTrigger value="data">Upload Data & GPX</TabsTrigger>
             <TabsTrigger value="campaign">Email Campaign</TabsTrigger>
           </TabsList>
           
+          <TabsContent value="setup" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Step 1: Configure Gmail Integration</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <GmailSetup />
+              </CardContent>
+            </Card>
+          </TabsContent>
+          
           <TabsContent value="data" className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Step 1: Upload Racer Data & GPX File</CardTitle>
+                <CardTitle>Step 2: Upload Racer Data & GPX File</CardTitle>
               </CardHeader>
               <CardContent>
                 <CsvUpload 
@@ -46,7 +59,7 @@ const RaceOrganizer = () => {
           <TabsContent value="campaign" className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Step 2: Send Email Campaign</CardTitle>
+                <CardTitle>Step 3: Send Gmail Campaign</CardTitle>
               </CardHeader>
               <CardContent>
                 <EmailCampaign 

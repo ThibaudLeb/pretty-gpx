@@ -1,7 +1,5 @@
-
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { Resend } from "npm:resend@2.0.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -37,6 +35,11 @@ interface PosterOptions {
   showRacerInfo: boolean;
 }
 
+interface GmailTokens {
+  access_token: string;
+  refresh_token: string;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -57,19 +60,24 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? '';
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Initialize Resend
-    const resendApiKey = Deno.env.get("RESEND_API_KEY");
-    if (!resendApiKey) {
-      console.error("RESEND_API_KEY environment variable is not set");
-      throw new Error("RESEND_API_KEY environment variable is not set");
-    }
-    const resend = new Resend(resendApiKey);
+    // Check if Gmail tokens are available
+    const gmailClientId = Deno.env.get("GMAIL_CLIENT_ID");
+    const gmailClientSecret = Deno.env.get("GMAIL_CLIENT_SECRET");
+    const gmailRefreshToken = Deno.env.get("GMAIL_REFRESH_TOKEN");
 
-    console.log(`Starting email campaign for ${racerData.length} racers`);
+    if (!gmailClientId || !gmailClientSecret || !gmailRefreshToken) {
+      console.error("Gmail OAuth credentials are not properly configured");
+      throw new Error("Gmail OAuth credentials are missing. Please configure GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN");
+    }
+
+    console.log(`Starting email campaign for ${racerData.length} racers using Gmail`);
 
     let successful = 0;
     let failed = 0;
     const failedEmails: string[] = [];
+
+    // Get Gmail access token
+    const accessToken = await getGmailAccessToken(gmailClientId, gmailClientSecret, gmailRefreshToken);
 
     // Process each racer
     for (const racer of racerData) {
@@ -94,13 +102,13 @@ serve(async (req) => {
           pdfUrl: posterResult.pdfUrl
         });
 
-        // Send personalized email with poster attachment
-        const emailResult = await sendPersonalizedEmail(
+        // Send personalized email with poster attachment using Gmail
+        const emailResult = await sendGmailEmail(
           racer,
           emailConfig,
           posterResult.pdfUrl!,
           posterResult.imageUrl!,
-          resend
+          accessToken
         );
 
         if (emailResult.success) {
@@ -112,7 +120,7 @@ serve(async (req) => {
           console.error(`✗ Failed to send email to ${racer.email}:`, emailResult.error);
         }
 
-        // Small delay to avoid overwhelming the email service
+        // Small delay to avoid overwhelming Gmail API
         await new Promise(resolve => setTimeout(resolve, 1000));
 
       } catch (error) {
@@ -146,6 +154,34 @@ serve(async (req) => {
     });
   }
 });
+
+async function getGmailAccessToken(clientId: string, clientSecret: string, refreshToken: string): Promise<string> {
+  try {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to refresh Gmail token: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.access_token;
+  } catch (error) {
+    console.error("Error getting Gmail access token:", error);
+    throw new Error(`Gmail authentication failed: ${error.message}`);
+  }
+}
 
 async function generatePersonalizedPoster(
   gpxFile: { name: string; content: string }, 
@@ -271,15 +307,15 @@ async function generatePersonalizedPoster(
   }
 }
 
-async function sendPersonalizedEmail(
+async function sendGmailEmail(
   racer: RacerData,
   emailConfig: EmailConfig,
   pdfUrl: string,
   imageUrl: string,
-  resend: any
+  accessToken: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    console.log(`Sending email to ${racer.email}`);
+    console.log(`Sending email via Gmail to ${racer.email}`);
 
     // Replace placeholders in subject and template
     const personalizedSubject = replacePlaceholders(emailConfig.subject, racer);
@@ -294,42 +330,65 @@ async function sendPersonalizedEmail(
     const pdfBuffer = await pdfResponse.arrayBuffer();
     const pdfBase64 = btoa(String.fromCharCode(...new Uint8Array(pdfBuffer)));
 
-    // Send email with Resend
-    const emailResponse = await resend.emails.send({
-      from: "Race Results <onboarding@resend.dev>", // Use verified domain
-      to: [racer.email],
-      subject: personalizedSubject,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h1 style="color: #2563eb;">Congratulations ${racer.firstName}!</h1>
-          <div style="white-space: pre-line; margin: 20px 0;">${personalizedBody}</div>
-          <div style="margin: 20px 0;">
-            <img src="${imageUrl}" alt="Your Race Poster" style="max-width: 100%; height: auto; border-radius: 8px;" />
-          </div>
-          <p style="color: #6b7280; font-size: 14px;">
-            Your personalized race poster is also attached as a PDF for high-quality printing.
-          </p>
+    // Create email message in RFC 2822 format
+    const boundary = "boundary_" + Math.random().toString(36);
+    const htmlBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h1 style="color: #2563eb;">Congratulations ${racer.firstName}!</h1>
+        <div style="white-space: pre-line; margin: 20px 0;">${personalizedBody}</div>
+        <div style="margin: 20px 0;">
+          <img src="${imageUrl}" alt="Your Race Poster" style="max-width: 100%; height: auto; border-radius: 8px;" />
         </div>
-      `,
-      attachments: [
-        {
-          filename: `${racer.firstName}_${racer.lastName}_race_poster.pdf`,
-          content: pdfBase64,
-          type: 'application/pdf',
-        },
-      ],
+        <p style="color: #6b7280; font-size: 14px;">
+          Your personalized race poster is also attached as a PDF for high-quality printing.
+        </p>
+      </div>
+    `;
+
+    const message = [
+      `To: ${racer.email}`,
+      `Subject: ${personalizedSubject}`,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      ``,
+      `--${boundary}`,
+      `Content-Type: text/html; charset=UTF-8`,
+      ``,
+      htmlBody,
+      ``,
+      `--${boundary}`,
+      `Content-Type: application/pdf`,
+      `Content-Disposition: attachment; filename="${racer.firstName}_${racer.lastName}_race_poster.pdf"`,
+      `Content-Transfer-Encoding: base64`,
+      ``,
+      pdfBase64,
+      ``,
+      `--${boundary}--`,
+    ].join('\r\n');
+
+    // Send email using Gmail API
+    const gmailResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        raw: btoa(message).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+      }),
     });
 
-    if (emailResponse.error) {
-      console.error(`Resend API error for ${racer.email}:`, emailResponse.error);
-      throw new Error(emailResponse.error.message);
+    if (!gmailResponse.ok) {
+      const errorText = await gmailResponse.text();
+      console.error(`Gmail API error for ${racer.email}:`, gmailResponse.status, errorText);
+      throw new Error(`Gmail API error: ${gmailResponse.status} - ${errorText}`);
     }
 
-    console.log(`Email sent successfully to ${racer.email}:`, emailResponse.id);
+    const result = await gmailResponse.json();
+    console.log(`Email sent successfully to ${racer.email} via Gmail:`, result.id);
     return { success: true };
 
   } catch (error) {
-    console.error("Error sending email:", error);
+    console.error("Error sending Gmail email:", error);
     return { success: false, error: error.message };
   }
 }
