@@ -1,6 +1,7 @@
 
 import React from "react";
 import { Route } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const Header = () => {
   return (
@@ -13,9 +14,14 @@ const Header = () => {
         <nav>
           <ul className="flex gap-6">
             <li>
-              <a href="/" className="text-sm font-medium hover:text-gpx-primary">
+              <Link to="/" className="text-sm font-medium hover:text-gpx-primary">
                 Home
-              </a>
+              </Link>
+            </li>
+            <li>
+              <Link to="/race-organizer" className="text-sm font-medium hover:text-gpx-primary">
+                Race Organizer
+              </Link>
             </li>
             <li>
               <a href="#" className="text-sm font-medium hover:text-gpx-primary">

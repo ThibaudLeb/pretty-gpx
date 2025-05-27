@@ -1,5 +1,5 @@
 
-import { HomeIcon, MapIcon, Users } from "lucide-react";
+import { HomeIcon, Users } from "lucide-react";
 import Index from "./pages/Index";
 import RaceOrganizer from "./pages/RaceOrganizer";
 
