@@ -1,6 +1,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Resend } from "npm:resend@2.0.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -51,6 +52,13 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? '';
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // Initialize Resend
+    const resendApiKey = Deno.env.get("RESEND_API_KEY");
+    if (!resendApiKey) {
+      throw new Error("RESEND_API_KEY environment variable is not set");
+    }
+    const resend = new Resend(resendApiKey);
+
     console.log(`Starting email campaign for ${racerData.length} racers`);
 
     let successful = 0;
@@ -78,8 +86,9 @@ serve(async (req) => {
         const emailResult = await sendPersonalizedEmail(
           racer,
           emailConfig,
-          posterResult.pdfUrl,
-          posterResult.imageUrl
+          posterResult.pdfUrl!,
+          posterResult.imageUrl!,
+          resend
         );
 
         if (emailResult.success) {
@@ -185,7 +194,7 @@ async function generatePersonalizedPoster(
     }
 
     const processorResponse = await response.json();
-    const { image_data, pdf_data, metadata } = processorResponse;
+    const { image_data, pdf_data } = processorResponse;
 
     if (!image_data || !pdf_data) {
       throw new Error("Missing image or PDF data from processor");
@@ -237,23 +246,50 @@ async function sendPersonalizedEmail(
   racer: RacerData,
   emailConfig: EmailConfig,
   pdfUrl: string,
-  imageUrl: string
+  imageUrl: string,
+  resend: any
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // Replace placeholders in subject and template
     const personalizedSubject = replacePlaceholders(emailConfig.subject, racer);
     const personalizedBody = replacePlaceholders(emailConfig.template, racer);
 
-    // For now, we'll use a simple HTTP request to send emails
-    // In production, you'd want to use a proper email service like SendGrid or SES
-    console.log(`Would send email to ${racer.email}:`);
-    console.log(`Subject: ${personalizedSubject}`);
-    console.log(`Body: ${personalizedBody}`);
-    console.log(`Attachments: PDF=${pdfUrl}, Image=${imageUrl}`);
+    // Download PDF for attachment
+    const pdfResponse = await fetch(pdfUrl);
+    const pdfBuffer = await pdfResponse.arrayBuffer();
+    const pdfBase64 = btoa(String.fromCharCode(...new Uint8Array(pdfBuffer)));
 
-    // Simulate email sending (replace with actual email service)
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Send email with Resend
+    const emailResponse = await resend.emails.send({
+      from: "Race Results <onboarding@resend.dev>", // Use verified domain
+      to: [racer.email],
+      subject: personalizedSubject,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h1 style="color: #2563eb;">Congratulations ${racer.firstName}!</h1>
+          <div style="white-space: pre-line; margin: 20px 0;">${personalizedBody}</div>
+          <div style="margin: 20px 0;">
+            <img src="${imageUrl}" alt="Your Race Poster" style="max-width: 100%; height: auto; border-radius: 8px;" />
+          </div>
+          <p style="color: #6b7280; font-size: 14px;">
+            Your personalized race poster is also attached as a PDF for high-quality printing.
+          </p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: `${racer.firstName}_${racer.lastName}_race_poster.pdf`,
+          content: pdfBase64,
+          type: 'application/pdf',
+        },
+      ],
+    });
 
+    if (emailResponse.error) {
+      throw new Error(emailResponse.error.message);
+    }
+
+    console.log(`Email sent successfully to ${racer.email}:`, emailResponse.id);
     return { success: true };
 
   } catch (error) {

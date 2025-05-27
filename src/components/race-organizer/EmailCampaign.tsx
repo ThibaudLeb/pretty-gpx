@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
-import { Mail, Send, AlertCircle } from "lucide-react";
+import { Mail, Send, AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { RacerData, CampaignProgress } from "@/types/race-organizer";
 import { supabase } from "@/integrations/supabase/client";
@@ -18,8 +18,6 @@ interface EmailCampaignProps {
 }
 
 const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
-  const [senderEmail, setSenderEmail] = useState("");
-  const [senderPassword, setSenderPassword] = useState("");
   const [emailSubject, setEmailSubject] = useState("Your {raceName} Results & GPX Poster");
   const [emailTemplate, setEmailTemplate] = useState(
     `Hi {firstName},\n\nCongratulations on completing the {raceName}!\n\nHere are your race results:\n• Ranking: #{ranking}\n• Duration: {duration}\n• Distance: {raceKm} km\n• Elevation: {raceElevation} m\n\nWe've attached a personalized GPX poster of your race route.\n\nThank you for participating!\n\nBest regards,\nRace Organization Team`
@@ -32,12 +30,17 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
     failed: 0,
     status: 'idle'
   });
+  const [campaignResults, setCampaignResults] = useState<{
+    successful: number;
+    failed: number;
+    failedEmails: string[];
+  } | null>(null);
 
-  const canStartCampaign = racerData.length > 0 && gpxFile && senderEmail && senderPassword;
+  const canStartCampaign = racerData.length > 0 && gpxFile;
 
   const startEmailCampaign = async () => {
     if (!canStartCampaign) {
-      toast.error("Please complete all required fields");
+      toast.error("Please upload racer data and GPX file first");
       return;
     }
 
@@ -47,6 +50,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
       failed: 0,
       status: 'processing'
     });
+    setCampaignResults(null);
 
     try {
       console.log("Starting email campaign for", racerData.length, "racers");
@@ -59,8 +63,6 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
             content: await fileToBase64(gpxFile)
           },
           emailConfig: {
-            senderEmail,
-            senderPassword,
             subject: emailSubject,
             template: emailTemplate
           },
@@ -84,13 +86,21 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
 
       setProgress(prev => ({
         ...prev,
+        completed: data.successful,
+        failed: data.failed,
         status: 'completed'
       }));
+
+      setCampaignResults({
+        successful: data.successful,
+        failed: data.failed,
+        failedEmails: data.failedEmails || []
+      });
 
       toast.success(`Email campaign completed! Sent ${data.successful} emails successfully.`);
       
       if (data.failed > 0) {
-        toast.error(`${data.failed} emails failed to send. Check the logs for details.`);
+        toast.error(`${data.failed} emails failed to send. Check the results below for details.`);
       }
 
     } catch (error) {
@@ -99,7 +109,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
         ...prev,
         status: 'error'
       }));
-      toast.error("Failed to start email campaign");
+      toast.error(`Failed to start email campaign: ${error.message}`);
     }
   };
 
@@ -115,7 +125,7 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
     });
   };
 
-  const progressPercentage = progress.total > 0 ? (progress.completed / progress.total) * 100 : 0;
+  const progressPercentage = progress.total > 0 ? ((progress.completed + progress.failed) / progress.total) * 100 : 0;
 
   return (
     <div className="space-y-6">
@@ -132,32 +142,6 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
           <Card className="p-6">
             <h3 className="text-lg font-medium mb-4">Email Configuration</h3>
             <div className="grid gap-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="senderEmail">Sender Gmail Address</Label>
-                  <Input
-                    id="senderEmail"
-                    type="email"
-                    value={senderEmail}
-                    onChange={(e) => setSenderEmail(e.target.value)}
-                    placeholder="your.email@gmail.com"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="senderPassword">Gmail App Password</Label>
-                  <Input
-                    id="senderPassword"
-                    type="password"
-                    value={senderPassword}
-                    onChange={(e) => setSenderPassword(e.target.value)}
-                    placeholder="Your Gmail app password"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Generate an app password in your Gmail security settings
-                  </p>
-                </div>
-              </div>
-              
               <div>
                 <Label htmlFor="emailSubject">Email Subject</Label>
                 <Input
@@ -237,13 +221,44 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
               <div className="space-y-2 mb-4">
                 <div className="flex justify-between text-sm">
                   <span>Progress</span>
-                  <span>{progress.completed}/{progress.total}</span>
+                  <span>{progress.completed + progress.failed}/{progress.total}</span>
                 </div>
                 <Progress value={progressPercentage} className="w-full" />
-                {progress.currentRacer && (
-                  <p className="text-sm text-muted-foreground">
-                    Processing: {progress.currentRacer}
+                {progress.status === 'processing' && (
+                  <p className="text-sm text-blue-600">
+                    Processing emails... This may take a few minutes.
                   </p>
+                )}
+              </div>
+            )}
+
+            {campaignResults && (
+              <div className="mb-4 space-y-2">
+                <div className="flex items-center space-x-2 text-green-600">
+                  <CheckCircle className="h-4 w-4" />
+                  <span className="text-sm font-medium">
+                    {campaignResults.successful} emails sent successfully
+                  </span>
+                </div>
+                {campaignResults.failed > 0 && (
+                  <div className="flex items-center space-x-2 text-red-600">
+                    <XCircle className="h-4 w-4" />
+                    <span className="text-sm font-medium">
+                      {campaignResults.failed} emails failed
+                    </span>
+                  </div>
+                )}
+                {campaignResults.failedEmails.length > 0 && (
+                  <details className="text-sm">
+                    <summary className="cursor-pointer text-muted-foreground">
+                      Show failed emails
+                    </summary>
+                    <ul className="mt-2 list-disc list-inside text-red-600">
+                      {campaignResults.failedEmails.map((email, index) => (
+                        <li key={index}>{email}</li>
+                      ))}
+                    </ul>
+                  </details>
                 )}
               </div>
             )}
@@ -261,11 +276,11 @@ const EmailCampaign = ({ racerData, gpxFile }: EmailCampaignProps) => {
               }
             </Button>
 
-            {!senderEmail && (
-              <p className="text-sm text-amber-600 mt-2">
-                ⚠️ Please enter your Gmail credentials to send emails
+            <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+              <p className="text-sm text-blue-800">
+                <strong>Note:</strong> This will generate personalized GPX posters for each racer and send them via email with their race results. Make sure you have configured the RESEND_API_KEY in your Supabase project settings.
               </p>
-            )}
+            </div>
           </Card>
         </>
       )}
