@@ -1,195 +1,291 @@
-import React, { useState } from "react";
-import Header from "@/components/Header";
-import Footer from "@/components/Footer";
-import FileUpload from "@/components/FileUpload";
-import PosterPreview from "@/components/PosterPreview";
-import PosterOptions from "@/components/PosterOptions";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Upload, Download, ImageIcon, X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { Download } from "lucide-react";
-import { toast } from "sonner";
-import { PosterOptions as PosterOptionsType, ApiResponse } from "@/types";
-import { processGpxFile, extractGpxMetadata, downloadPosterPdf } from "@/services/gpxService";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { parseGpx, GpxTrack } from "@/utils/gpxParser";
+import { renderPoster, POSTER_W, POSTER_H } from "@/utils/posterRenderer";
 
-const Index = () => {
-  const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-  const [metadata, setMetadata] = useState<any>(null);
-  const [pdfUrl, setPdfUrl] = useState<string | undefined>(undefined);
-  const [options, setOptions] = useState<PosterOptionsType>({
-    template: "standard",
-    colorScheme: "default",
-    lineWidth: 3,
-    showTitle: true,
-    showStats: true,
-    showElevation: true,
-    paperSize: "a4",
-    orientation: "portrait",
-    highResolution: false
-  });
+export default function Index() {
+  const [tracks, setTracks] = useState<GpxTrack[]>([]);
+  const [title, setTitle] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileSelected = async (selectedFile: File) => {
-    setFile(selectedFile);
-    setLoading(true);
-    
-    try {
-      // Extract basic metadata from GPX file
-      const extractedMetadata = await extractGpxMetadata(selectedFile);
-      setMetadata(extractedMetadata);
-      
-      // Process the GPX file using our Supabase function
-      const response = await processGpxFile(selectedFile, options);
-      setPreviewUrl(response.imageUrl);
-      setPdfUrl(response.pdfUrl);
-      
-      // Update metadata with any additional information from the processor
-      if (response.metadata) {
-        setMetadata(response.metadata);
-      }
-      
-      toast.success("GPX file processed successfully");
-    } catch (error) {
-      console.error("Error processing GPX file:", error);
-      toast.error("Error processing GPX file. Please try again.");
-    } finally {
-      setLoading(false);
+  // Re-render the poster whenever tracks or title changes
+  useEffect(() => {
+    if (!canvasRef.current || tracks.length === 0) return;
+    const raf = requestAnimationFrame(() => {
+      renderPoster(canvasRef.current!, tracks, title || tracks[0].name);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [tracks, title]);
+
+  const processFiles = useCallback(async (files: FileList | File[]) => {
+    const gpxFiles = Array.from(files).filter((f) =>
+      /\.(gpx|xml)$/i.test(f.name)
+    );
+    if (gpxFiles.length === 0) {
+      toast.error("Veuillez uploader des fichiers .gpx ou .xml");
+      return;
     }
-  };
 
-  const handleOptionsChange = async (newOptions: PosterOptionsType) => {
-    setOptions(newOptions);
-    
-    // Only regenerate the preview if we have a file
-    if (file) {
-      setLoading(true);
+    const newTracks: GpxTrack[] = [];
+    for (const file of gpxFiles) {
       try {
-        const response = await processGpxFile(file, newOptions);
-        setPreviewUrl(response.imageUrl);
-        setPdfUrl(response.pdfUrl);
-        
-        // Update metadata with any additional information from the processor
-        if (response.metadata) {
-          setMetadata(response.metadata);
-        }
-      } catch (error) {
-        console.error("Error updating preview:", error);
-        toast.error("Error updating preview. Please try again.");
-      } finally {
-        setLoading(false);
+        const content = await file.text();
+        const track = parseGpx(content, file.name);
+        newTracks.push(track);
+      } catch (err) {
+        toast.error(
+          `Erreur dans ${file.name} : ${err instanceof Error ? err.message : "Fichier invalide"}`
+        );
       }
     }
+
+    if (newTracks.length > 0) {
+      setTracks((prev) => {
+        const combined = [...prev, ...newTracks];
+        return combined;
+      });
+      if (!title && newTracks[0]) {
+        setTitle(newTracks[0].name);
+      }
+      toast.success(
+        newTracks.length === 1
+          ? `Trace chargée : ${newTracks[0].name}`
+          : `${newTracks.length} traces chargées`
+      );
+    }
+  }, [title]);
+
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  const onDragLeave = () => setIsDragging(false);
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    processFiles(e.dataTransfer.files);
+  };
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) processFiles(e.target.files);
+    e.target.value = "";
   };
 
-  const handleDownload = async () => {
-    if (!pdfUrl) return;
-    
-    toast.success("Preparing your PDF poster for download...");
-    
-    try {
-      // Download the PDF using the pdfUrl
-      await downloadPosterPdf(pdfUrl, `${metadata?.title || 'gpx-poster'}.pdf`);
-    } catch (error) {
-      console.error("Error downloading PDF:", error);
-      toast.error("Error downloading PDF. Please try again.");
-    }
+  const removeTrack = (index: number) => {
+    setTracks((prev) => prev.filter((_, i) => i !== index));
   };
+
+  const handleDownload = () => {
+    if (!canvasRef.current || tracks.length === 0) return;
+    canvasRef.current.toBlob((blob) => {
+      if (!blob) {
+        toast.error("Erreur lors de la génération du PNG");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download =
+        (title || tracks[0]?.name || "poster")
+          .toLowerCase()
+          .replace(/\s+/g, "-") + ".png";
+      a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  };
+
+  const totalDistKm = tracks.reduce((s, t) => s + t.distanceKm, 0);
+  const totalEleGain = tracks.reduce((s, t) => s + t.elevationGainM, 0);
 
   return (
-    <div className="flex flex-col min-h-screen">
-      <Header />
-      
-      <main className="flex-1 container py-8">
-        <section className="mb-10">
-          <h2 className="text-3xl font-bold mb-2">Create Your GPX Poster</h2>
-          <p className="text-muted-foreground">
-            Upload your GPX file and customize your poster with our easy-to-use tools.
-          </p>
-        </section>
-        
-        {!file ? (
-          <div className="max-w-2xl mx-auto">
-            <FileUpload onFileSelected={handleFileSelected} />
-            
-            <div className="mt-10 text-center">
-              <h3 className="text-xl font-semibold mb-4">What is GPX Poster Creator?</h3>
-              <p className="text-muted-foreground">
-                Create beautiful posters from your running, cycling, or hiking activities. 
-                Simply upload your GPX file, customize your design, and download a stunning 
-                visual representation of your adventure.
+    <div className="min-h-screen bg-slate-50">
+      {/* Header */}
+      <header className="bg-white border-b border-border px-6 py-4">
+        <div className="max-w-6xl mx-auto flex items-center gap-3">
+          <ImageIcon className="h-6 w-6 text-primary" />
+          <h1 className="text-xl font-semibold tracking-tight">
+            Route Art Poster Forge
+          </h1>
+          <span className="text-sm text-muted-foreground ml-1">
+            — Générez un poster A4 depuis vos traces GPX
+          </span>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {tracks.length === 0 ? (
+          /* ── Upload screen ── */
+          <div className="flex flex-col items-center justify-center min-h-[70vh]">
+            <div
+              className={[
+                "w-full max-w-lg border-2 border-dashed rounded-2xl p-12 text-center transition-colors cursor-pointer",
+                isDragging
+                  ? "border-primary bg-primary/5"
+                  : "border-border bg-white hover:border-primary/60 hover:bg-primary/3",
+              ].join(" ")}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+              <p className="text-lg font-medium mb-1">
+                Glissez vos fichiers GPX ici
+              </p>
+              <p className="text-sm text-muted-foreground mb-6">
+                ou cliquez pour parcourir
+              </p>
+              <Button variant="outline" type="button">
+                Choisir des fichiers
+              </Button>
+              <p className="text-xs text-muted-foreground mt-4">
+                Formats acceptés : .gpx, .xml — plusieurs traces possibles
               </p>
             </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".gpx,.xml"
+              multiple
+              className="hidden"
+              onChange={onFileChange}
+            />
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="md:col-span-2">
-              <div className="space-y-6">
-                <PosterPreview imageUrl={previewUrl} loading={loading} />
-                
-                {metadata && (
-                  <Card>
-                    <CardContent className="p-6">
-                      <h3 className="text-xl font-semibold mb-4">{metadata.title || "Activity Details"}</h3>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div>
-                          <p className="text-sm text-muted-foreground">Distance</p>
-                          <p className="font-medium">{metadata.distance} km</p>
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Elevation</p>
-                          <p className="font-medium">{metadata.elevation} m</p>
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Duration</p>
-                          <p className="font-medium">{metadata.duration}</p>
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Date</p>
-                          <p className="font-medium">{metadata.date}</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-                
-                <div className="flex justify-center">
-                  <Button 
-                    size="lg" 
-                    className="gap-2 bg-gpx-primary hover:bg-blue-600"
-                    onClick={handleDownload}
-                    disabled={!previewUrl || loading}
-                  >
-                    <Download className="h-5 w-5" />
-                    Download Poster
-                  </Button>
-                </div>
+          /* ── Editor screen ── */
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8">
+            {/* Left: poster preview */}
+            <div className="flex flex-col gap-4">
+              <p className="text-xs text-muted-foreground text-center">
+                Aperçu — export PNG 2480 × 3508 px (A4 @ 300 dpi)
+              </p>
+              <div className="flex justify-center">
+                <canvas
+                  ref={canvasRef}
+                  width={POSTER_W}
+                  height={POSTER_H}
+                  style={{
+                    width: "100%",
+                    maxWidth: "420px",
+                    height: "auto",
+                    boxShadow:
+                      "0 10px 40px -8px rgba(0,0,0,0.18), 0 4px 12px -4px rgba(0,0,0,0.10)",
+                    borderRadius: "4px",
+                  }}
+                />
               </div>
             </div>
-            
-            <div>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-medium">Customize Your Poster</h3>
-                  <Button 
-                    variant="ghost" 
-                    size="sm"
-                    onClick={() => setFile(null)}
-                  >
-                    Upload New
-                  </Button>
-                </div>
-                <Separator />
-                <PosterOptions options={options} onOptionsChange={handleOptionsChange} />
-              </div>
+
+            {/* Right: controls */}
+            <div className="flex flex-col gap-5">
+              {/* Title input */}
+              <Card>
+                <CardContent className="pt-5 pb-5 space-y-3">
+                  <Label htmlFor="title">Titre du poster</Label>
+                  <Input
+                    id="title"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Nom de votre trace..."
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Track list */}
+              <Card>
+                <CardContent className="pt-5 pb-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label>Traces chargées</Label>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-xs text-primary hover:underline"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Plus className="h-3 w-3" />
+                      Ajouter
+                    </button>
+                  </div>
+
+                  <ul className="space-y-2">
+                    {tracks.map((t, i) => (
+                      <li
+                        key={i}
+                        className="flex items-center justify-between gap-2 text-sm bg-muted rounded-md px-3 py-2"
+                      >
+                        <span className="truncate font-medium">{t.name}</span>
+                        <button
+                          type="button"
+                          className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+                          onClick={() => removeTrack(i)}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".gpx,.xml"
+                    multiple
+                    className="hidden"
+                    onChange={onFileChange}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Stats */}
+              <Card>
+                <CardContent className="pt-5 pb-5">
+                  <Label className="mb-3 block">Statistiques</Label>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="bg-muted rounded-md p-3">
+                      <p className="text-muted-foreground text-xs mb-1">Distance</p>
+                      <p className="font-semibold text-base">
+                        {totalDistKm.toFixed(2)} km
+                      </p>
+                    </div>
+                    <div className="bg-muted rounded-md p-3">
+                      <p className="text-muted-foreground text-xs mb-1">Dénivelé +</p>
+                      <p className="font-semibold text-base">
+                        {Math.round(totalEleGain)} m
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Actions */}
+              <Button
+                size="lg"
+                className="w-full gap-2"
+                onClick={handleDownload}
+              >
+                <Download className="h-5 w-5" />
+                Télécharger le poster PNG
+              </Button>
+
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  setTracks([]);
+                  setTitle("");
+                }}
+              >
+                Recommencer
+              </Button>
             </div>
           </div>
         )}
       </main>
-      
-      <Footer />
     </div>
   );
-};
-
-export default Index;
+}
