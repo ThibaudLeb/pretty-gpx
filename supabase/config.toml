@@ -1,5 +1,0 @@
-
-project_id = "ojdklhnblzbpoewzttvk"
-
-[functions.process-gpx]
-verify_jwt = false

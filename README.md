@@ -1,73 +1,76 @@
-# Welcome to your Lovable project
+# Route Art Poster Forge
 
-## Project info
+Génère de beaux posters A4 depuis vos traces GPX — 100% client-side, zéro serveur.
 
-**URL**: https://lovable.dev/projects/c3cab561-7ac0-445c-a67b-25397e91cd78
+## Fonctionnalités
 
-## How can I edit this code?
+- **Upload GPX** — drag & drop ou sélection fichier, un ou plusieurs fichiers simultanément
+- **Aperçu en temps réel** — rendu Canvas natif, mise à jour instantanée
+- **Édition du titre** — personnalisez le titre du poster
+- **Export PNG haute résolution** — 2480 × 3508 px (A4 @ 300 dpi)
+- **100% client-side** — aucun serveur, aucune API externe, aucune donnée envoyée
 
-There are several ways of editing your application.
+## Stack technique
 
-**Use Lovable**
+- React 18 + Vite + TypeScript
+- Tailwind CSS + shadcn/ui
+- Canvas API natif pour le rendu du poster
+- DOMParser natif pour le parsing GPX (zéro dépendance externe)
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/c3cab561-7ac0-445c-a67b-25397e91cd78) and start prompting.
+## Déploiement sur Vercel
 
-Changes made via Lovable will be committed automatically to this repo.
+**En un clic :** connectez votre repo GitHub à Vercel et déployez.
 
-**Use your preferred IDE**
+```
+Framework Preset : Vite
+Build Command    : npm run build
+Output Directory : dist
+```
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+Aucune variable d'environnement requise.
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+## Développement local
 
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+Ouvrez [http://localhost:5173](http://localhost:5173).
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Build de production
 
-**Use GitHub Codespaces**
+```bash
+npm run build
+npm run preview
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+## Structure du projet
 
-## What technologies are used for this project?
+```
+src/
+  pages/Index.tsx          # Page principale (upload, preview, export)
+  utils/
+    gpxParser.ts           # Parser GPX + calcul distance/dénivelé (Haversine)
+    posterRenderer.ts      # Moteur de rendu Canvas (carte + profil altimétrique)
+  components/ui/           # Composants shadcn/ui (button, card, input, label…)
+  App.tsx                  # Racine React
+```
 
-This project is built with:
+## Format du poster
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+| Zone           | Hauteur relative | Contenu                                       |
+|----------------|-----------------|-----------------------------------------------|
+| Titre          | 15 %            | Texte cursive bleu marine centré              |
+| Carte          | 55 %            | Projection équirectangulaire de la trace GPX  |
+| Profil + stats | 30 %            | Silhouette du dénivelé + distance et D+       |
 
-## How can I deploy this project?
+Résolution interne : **2480 × 3508 px** (A4 portrait @ 300 dpi).
 
-Simply open [Lovable](https://lovable.dev/projects/c3cab561-7ac0-445c-a67b-25397e91cd78) and click on Share -> Publish.
+## Utilisation
 
-## Can I connect a custom domain to my Lovable project?
+1. Glissez un ou plusieurs fichiers `.gpx` dans la zone d'upload
+2. Modifiez le titre si besoin
+3. Cliquez sur **Télécharger le poster PNG**
 
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+Le fichier PNG est généré entièrement dans votre navigateur.
