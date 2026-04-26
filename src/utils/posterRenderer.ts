@@ -55,19 +55,21 @@ function buildFontString(font: FontDef, size: number) {
   return `${font.style} ${size}px ${font.family}`;
 }
 
-/** Try to extract an arrival city from a GPX track name.
- *  Handles patterns like "De X à Y", "X - Y", "X to Y". */
-function extractArrivalCity(name: string): string | null {
-  const patterns = [
-    /\bà\s+(.+)$/iu,
-    /\bto\s+(.+)$/iu,
-    /\s[-–]\s+(.+)$/u,
-  ];
+/** Extract arrival city: "De X à Y" → "Y", "X - Y" → "Y", "X to Y" → "Y".
+ *  Falls back to the full track name if no pattern matches. */
+function extractArrivalCity(name: string): string {
+  const patterns = [/\bà\s+(.+)$/iu, /\bto\s+(.+)$/iu, /\s[-–]\s+(.+)$/u];
   for (const re of patterns) {
     const m = name.match(re);
     if (m) return m[1].trim();
   }
-  return null;
+  return name.trim();
+}
+
+/** Extract departure city: "De X à Y" → "X". Returns null if pattern not found. */
+function extractDepartureCity(name: string): string | null {
+  const m = name.match(/^De\s+(.+?)\s+[àa]\s+/iu);
+  return m ? m[1].trim() : null;
 }
 
 // ── Drawing: tipi icon ───────────────────────────────────────────────────────
@@ -239,7 +241,7 @@ export async function renderPoster(
   }
 
   // ── 4. GPX traces ──
-  const lineW = Math.max(8, Math.round(POSTER_W * 0.0038));
+  const lineW = Math.max(14, Math.round(POSTER_W * 0.0095)); // ~2mm at A4 300dpi
   ctx.strokeStyle = palette.track;
   ctx.lineWidth = lineW;
   ctx.lineJoin = 'round';
@@ -264,7 +266,7 @@ export async function renderPoster(
   const labelSize = Math.round(POSTER_W * 0.018);
   const isMulti   = tracks.length > 1;
 
-  // Start: filled circle
+  // Start: filled circle + departure label (multi-trace)
   const [sx0, sy0] = toPixel(tracks[0].points[0].lat, tracks[0].points[0].lon);
   ctx.fillStyle = palette.title;
   ctx.beginPath();
@@ -272,25 +274,30 @@ export async function renderPoster(
   ctx.fill();
 
   if (isMulti) {
-    // Tipi at end of each intermediate stage + label
-    for (let t = 0; t < tracks.length - 1; t++) {
+    // Departure label for first track
+    const depart = extractDepartureCity(tracks[0].name);
+    if (depart) drawLabel(ctx, depart, sx0, sy0 - markerR * 2.2, palette.title, labelSize);
+
+    // Tipi + arrival label at end of every track (including last)
+    for (let t = 0; t < tracks.length; t++) {
       const endPt = tracks[t].points[tracks[t].points.length - 1];
       const [ex, ey] = toPixel(endPt.lat, endPt.lon);
-      drawTipi(ctx, ex, ey - tipiSize * 0.5, tipiSize, palette.title);
-      const city = extractArrivalCity(tracks[t].name);
-      if (city) {
-        drawLabel(ctx, city, ex, ey - tipiSize * 1.6, palette.title, labelSize);
+      const city = extractArrivalCity(tracks[t].name); // always returns a string now
+      const isLast = t === tracks.length - 1;
+
+      if (isLast) {
+        // Final destination: filled square
+        const sq = markerR * 1.6;
+        ctx.fillStyle = palette.title;
+        ctx.fillRect(ex - sq / 2, ey - sq / 2, sq, sq);
+      } else {
+        // Intermediate stage end: tipi
+        drawTipi(ctx, ex, ey - tipiSize * 0.5, tipiSize, palette.title);
       }
+      drawLabel(ctx, city, ex, ey - tipiSize * 1.6, palette.title, labelSize);
     }
-    // End: square on the last track's last point
-    const lastTrack = tracks[tracks.length - 1];
-    const lastPt = lastTrack.points[lastTrack.points.length - 1];
-    const [ex, ey] = toPixel(lastPt.lat, lastPt.lon);
-    const sq = markerR * 1.6;
-    ctx.fillStyle = palette.title;
-    ctx.fillRect(ex - sq / 2, ey - sq / 2, sq, sq);
   } else {
-    // Single trace: just end square
+    // Single trace: end square only
     const last = tracks[0].points[tracks[0].points.length - 1];
     const [ex, ey] = toPixel(last.lat, last.lon);
     const sq = markerR * 1.6;
@@ -359,8 +366,8 @@ function drawProfile(
   const baseY = POSTER_H;
   const areaH = baseY - profileTopY;
 
-  const padH  = POSTER_W * 0.055;
-  const areaW = POSTER_W - 2 * padH;
+  const padH  = 0; // full width — edge to edge
+  const areaW = POSTER_W;
 
   // Cumulative distances (to split per track for multi-trace)
   const trackCumDist: number[] = [0]; // cumulative dist at start of each track
@@ -386,7 +393,7 @@ function drawProfile(
   if (!hasEle) {
     // Flat profile: just a thin strip at the bottom
     ctx.fillStyle = hexToRgba(palette.profileFill, 0.85);
-    ctx.fillRect(padH, baseY - areaH * 0.08, areaW, areaH * 0.08);
+    ctx.fillRect(0, baseY - areaH * 0.08, POSTER_W, areaH * 0.08);
   } else {
     // ── Solid silhouette ──
     ctx.fillStyle = palette.profileFill;
@@ -396,24 +403,6 @@ function drawProfile(
     ctx.lineTo(toX(D), baseY);
     ctx.closePath();
     ctx.fill();
-
-    // ── Contour lines stacked above silhouette (SC4 style) ──
-    const NUM_CONTOURS = 14;
-    const LINE_SPACING = POSTER_W * 0.011; // ~27px at 2480px
-    for (let k = NUM_CONTOURS; k >= 1; k--) {
-      const yShift = k * LINE_SPACING;
-      const alpha = 0.08 + 0.42 * (k / NUM_CONTOURS);
-      ctx.strokeStyle = hexToRgba(palette.profileFill, alpha);
-      ctx.lineWidth = Math.max(2, POSTER_W * 0.0009);
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      for (let i = 0; i < pts.length; i++) {
-        const x = toX(ptCum[i]);
-        const y = toY(eles[i]) - yShift;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
 
     // ── Mountain peak triangles ──
     const minProm = eRange * 0.07;
