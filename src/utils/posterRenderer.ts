@@ -1,21 +1,35 @@
 // ---------------------------------------------------------------------------
-// Poster canvas renderer
-// Layout (inspired by pretty-gpx): 18% title / 60% map / 22% profile
-// Hillshading via ArcGIS tiles, Mercator projection, Lobster font
+// Pretty GPX — Poster canvas renderer
+//
+// Design:  ONE unified element — hillshade covers the full 2480×3508 canvas.
+//          Title text is overlaid at the top.
+//          GPX trace is in the middle.
+//          Elevation profile silhouette emerges from the bottom, blending
+//          into the map zone (no separate coloured bands).
+//
+// Profile: contour-lines style — solid fill + stacked shifted curves above it
+// Multi-trace: tipi markers + city labels at each stage endpoint
 // ---------------------------------------------------------------------------
 
 import { GpxTrack, haversineKm } from './gpxParser';
-import { Palette } from './palettes';
-import { buildHillshadeRegion, mercatorX, mercatorY } from './hillshading';
+import { Palette, FontDef } from './palettes';
+import {
+  buildHillshadeRegion,
+  mercatorX, mercatorY,
+  normToLat, normToLon,
+} from './hillshading';
 
 export const POSTER_W = 2480;
 export const POSTER_H = 3508;
 
-const TITLE_RATIO   = 0.18;
-const MAP_RATIO     = 0.60;
-// PROFILE_RATIO = 0.22 (implicit)
+// ── Layout fractions (of poster height/width) ────────────────────────────────
+const TITLE_Y      = 0.085;  // centre of title text
+const TRACK_CY     = 0.43;   // centre of track bounding box
+const TRACK_VFILL  = 0.54;   // max fraction of height for the track
+const TRACK_HFILL  = 0.74;   // max fraction of width for the track
+const PROFILE_FRAC = 0.26;   // profile silhouette covers bottom 26 %
 
-// ── Utilities ────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function decimate<T>(arr: T[], max: number): T[] {
   if (arr.length <= max) return arr;
@@ -25,129 +39,207 @@ function decimate<T>(arr: T[], max: number): T[] {
   return out;
 }
 
-function findPeaks(data: number[], minProminence: number, minGap: number): number[] {
-  const candidates: number[] = [];
-  for (let i = 1; i < data.length - 1; i++) {
-    if (data[i] <= data[i - 1] || data[i] <= data[i + 1]) continue;
-    const half = Math.min(i, data.length - 1 - i, minGap * 3);
-    const lMin = Math.min(...data.slice(Math.max(0, i - half), i));
-    const rMin = Math.min(...data.slice(i + 1, i + half + 1));
-    if (data[i] - Math.max(lMin, rMin) >= minProminence) candidates.push(i);
-  }
-  // deduplicate: keep one peak per minGap window
-  const peaks: number[] = [];
-  for (const c of candidates) {
-    if (peaks.length === 0 || c - peaks[peaks.length - 1] >= minGap) peaks.push(c);
-  }
-  return peaks;
+function hexToRgba(hex: string, a: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
 }
 
-function drawTriangle(
+async function loadFont(spec: string) {
+  try { await document.fonts.load(spec); } catch { /* fallback ok */ }
+}
+
+function buildFontString(font: FontDef, size: number) {
+  return `${font.style} ${size}px ${font.family}`;
+}
+
+/** Try to extract an arrival city from a GPX track name.
+ *  Handles patterns like "De X à Y", "X - Y", "X to Y". */
+function extractArrivalCity(name: string): string | null {
+  const patterns = [
+    /\bà\s+(.+)$/iu,
+    /\bto\s+(.+)$/iu,
+    /\s[-–]\s+(.+)$/u,
+  ];
+  for (const re of patterns) {
+    const m = name.match(re);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+// ── Drawing: tipi icon ───────────────────────────────────────────────────────
+
+function drawTipi(
   ctx: CanvasRenderingContext2D,
-  cx: number, cy: number, size: number
+  cx: number, cy: number, size: number,
+  color: string
 ) {
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(2, size * 0.1);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Body triangle
   ctx.beginPath();
   ctx.moveTo(cx, cy - size);
-  ctx.lineTo(cx + size * 0.75, cy + size * 0.55);
-  ctx.lineTo(cx - size * 0.75, cy + size * 0.55);
+  ctx.lineTo(cx + size * 0.72, cy + size * 0.48);
+  ctx.lineTo(cx - size * 0.72, cy + size * 0.48);
+  ctx.closePath();
+  ctx.fill();
+
+  // Two poles sticking out above apex
+  ctx.beginPath();
+  ctx.moveTo(cx - size * 0.14, cy - size * 0.82);
+  ctx.lineTo(cx - size * 0.38, cy - size * 1.32);
+  ctx.moveTo(cx + size * 0.14, cy - size * 0.82);
+  ctx.lineTo(cx + size * 0.38, cy - size * 1.32);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── Drawing: find elevation profile peaks ───────────────────────────────────
+
+function findPeaks(data: number[], minProm: number, minGap: number): number[] {
+  const cands: number[] = [];
+  for (let i = 1; i < data.length - 1; i++) {
+    if (data[i] <= data[i - 1] || data[i] <= data[i + 1]) continue;
+    const w = Math.min(i, data.length - 1 - i, minGap * 3);
+    const lMin = Math.min(...data.slice(Math.max(0, i - w), i));
+    const rMin = Math.min(...data.slice(i + 1, i + w + 1));
+    if (data[i] - Math.max(lMin, rMin) >= minProm) cands.push(i);
+  }
+  const out: number[] = [];
+  for (const c of cands) {
+    if (out.length === 0 || c - out[out.length - 1] >= minGap) out.push(c);
+  }
+  return out;
+}
+
+// ── Drawing: small mountain triangle ────────────────────────────────────────
+
+function drawTriangle(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number) {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - size);
+  ctx.lineTo(cx + size * 0.72, cy + size * 0.52);
+  ctx.lineTo(cx - size * 0.72, cy + size * 0.52);
   ctx.closePath();
   ctx.fill();
 }
 
-async function loadFont(spec: string) {
-  try { await document.fonts.load(spec); } catch { /* use fallback */ }
+// ── Map label (city name) ────────────────────────────────────────────────────
+
+function drawLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string, x: number, y: number,
+  color: string, fontSize: number
+) {
+  ctx.save();
+  ctx.font = `bold ${fontSize}px 'Lobster', sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  // Shadow for readability on any background
+  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowBlur = fontSize * 0.5;
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+  ctx.restore();
 }
 
-// ── Title zone ───────────────────────────────────────────────────────────────
+// ── Core render ──────────────────────────────────────────────────────────────
 
-async function drawTitle(
-  ctx: CanvasRenderingContext2D,
+export async function renderPoster(
+  canvas: HTMLCanvasElement,
+  tracks: GpxTrack[],
   title: string,
-  titleH: number,
-  palette: Palette
-) {
+  palette: Palette,
+  font: FontDef,
+  onProgress?: (pct: number) => void
+): Promise<void> {
+  const prog = onProgress ?? (() => {});
+
+  canvas.width  = POSTER_W;
+  canvas.height = POSTER_H;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // ── 1. Solid background fallback ──
   ctx.fillStyle = palette.bg;
-  ctx.fillRect(0, 0, POSTER_W, titleH);
+  ctx.fillRect(0, 0, POSTER_W, POSTER_H);
+  prog(2);
 
-  await loadFont(`italic bold 120px 'Lobster'`);
-
-  let size = Math.round(titleH * 0.30);
-  const font = (s: number) => `italic bold ${s}px 'Lobster', cursive`;
-  ctx.font = font(size);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  while (ctx.measureText(title).width > POSTER_W * 0.88 && size > 40) {
-    size -= 4;
-    ctx.font = font(size);
+  if (tracks.length === 0) {
+    // Draw title only
+    await drawTitle(ctx, title || 'Pretty GPX', palette, font);
+    prog(100);
+    return;
   }
 
-  ctx.fillStyle = palette.title;
-  ctx.fillText(title, POSTER_W / 2, titleH / 2);
-}
-
-// ── Map zone ─────────────────────────────────────────────────────────────────
-
-async function drawMap(
-  ctx: CanvasRenderingContext2D,
-  tracks: GpxTrack[],
-  mapY: number,
-  mapH: number,
-  palette: Palette,
-  onProgress: (pct: number) => void
-) {
-  ctx.fillStyle = palette.bg;
-  ctx.fillRect(0, mapY, POSTER_W, mapH);
-
-  const allPts = tracks.flatMap((t) => t.points);
-  if (allPts.length < 2) return;
-
-  // Mercator bounding box of the track
-  const lats = allPts.map((p) => p.lat);
-  const lons = allPts.map((p) => p.lon);
+  // ── 2. Compute Mercator layout ──
+  const allPts = tracks.flatMap(t => t.points);
+  const lats = allPts.map(p => p.lat);
+  const lons = allPts.map(p => p.lon);
   const latMin = Math.min(...lats), latMax = Math.max(...lats);
   const lonMin = Math.min(...lons), lonMax = Math.max(...lons);
 
   const xMin = mercatorX(lonMin), xMax = mercatorX(lonMax);
   const yTop = mercatorY(latMax), yBot = mercatorY(latMin); // yTop < yBot
 
-  const pad = 0.13;
   const xSpan = Math.max(xMax - xMin, 1e-6);
   const ySpan = Math.max(yBot - yTop, 1e-6);
 
-  const xPadded = xSpan * pad, yPadded = ySpan * pad;
-  const xMinP = xMin - xPadded, yTopP = yTop - yPadded;
-  const xSpanP = xSpan + 2 * xPadded, ySpanP = ySpan + 2 * yPadded;
-
-  const scale = Math.min(POSTER_W / xSpanP, mapH / ySpanP);
-  const pixW = xSpanP * scale, pixH = ySpanP * scale;
-  const offX = (POSTER_W - pixW) / 2;
-  const offY = mapY + (mapH - pixH) / 2;
-
-  const toPixel = (lat: number, lon: number): [number, number] => [
-    offX + (mercatorX(lon) - xMinP) * scale,
-    offY + (mercatorY(lat) - yTopP) * scale,
-  ];
-
-  // ── Hillshade ──
-  onProgress(10);
-  const hs = await buildHillshadeRegion(
-    lonMin - xSpan * pad, lonMax + xSpan * pad,
-    latMin - ySpan * pad, latMax + ySpan * pad,
-    palette.bg,
-    palette.isLight
+  const scale = Math.min(
+    (POSTER_W * TRACK_HFILL) / xSpan,
+    (POSTER_H * TRACK_VFILL) / ySpan
   );
-  onProgress(70);
 
-  if (hs) {
-    const hx0 = offX + (hs.xMin - xMinP) * scale;
-    const hy0 = offY + (hs.yMin - yTopP) * scale;
-    const hx1 = offX + (hs.xMax - xMinP) * scale;
-    const hy1 = offY + (hs.yMax - yTopP) * scale;
-    ctx.drawImage(hs.canvas, hx0, hy0, hx1 - hx0, hy1 - hy0);
+  const xMid = (xMin + xMax) / 2;
+  const yMid = (yTop + yBot) / 2;
+
+  // Canvas pixel where the track centre sits
+  const pxCentre = POSTER_W / 2;
+  const pyCentre = POSTER_H * TRACK_CY;
+
+  // Mercator origin of the canvas top-left
+  const xOrigin = xMid - pxCentre / scale;
+  const yOrigin = yMid - pyCentre / scale;
+
+  function toPixel(lat: number, lon: number): [number, number] {
+    return [
+      (mercatorX(lon) - xOrigin) * scale,
+      (mercatorY(lat) - yOrigin) * scale,
+    ];
   }
 
-  // ── GPX tracks ──
-  const lineW = Math.max(6, Math.round(POSTER_W * 0.0028));
+  // ── 3. Full-canvas hillshade ──
+  prog(5);
+  const lonLeft   = normToLon(xOrigin);
+  const lonRight  = normToLon(xOrigin + POSTER_W / scale);
+  const latTop    = normToLat(yOrigin);
+  const latBottom = normToLat(yOrigin + POSTER_H / scale);
+
+  const hs = await buildHillshadeRegion(
+    lonLeft, lonRight, latBottom, latTop,
+    palette.bg, palette.isLight
+  );
+  prog(65);
+
+  if (hs) {
+    const hx0 = (hs.xMin - xOrigin) * scale;
+    const hy0 = (hs.yMin - yOrigin) * scale;
+    const hw  = (hs.xMax - hs.xMin) * scale;
+    const hh  = (hs.yMax - hs.yMin) * scale;
+    ctx.drawImage(hs.canvas, hx0, hy0, hw, hh);
+  }
+
+  // ── 4. GPX traces ──
+  const lineW = Math.max(8, Math.round(POSTER_W * 0.0038));
   ctx.strokeStyle = palette.track;
   ctx.lineWidth = lineW;
   ctx.lineJoin = 'round';
@@ -166,146 +258,223 @@ async function drawMap(
     ctx.stroke();
   }
 
-  // ── Markers ──
-  const markerR = Math.round(POSTER_W * 0.006);
-  ctx.fillStyle = palette.title;
+  // ── 5. Map markers ──
+  const markerR   = Math.round(POSTER_W * 0.007);
+  const tipiSize  = Math.round(POSTER_W * 0.014);
+  const labelSize = Math.round(POSTER_W * 0.018);
+  const isMulti   = tracks.length > 1;
 
   // Start: filled circle
-  const [sx, sy] = toPixel(tracks[0].points[0].lat, tracks[0].points[0].lon);
+  const [sx0, sy0] = toPixel(tracks[0].points[0].lat, tracks[0].points[0].lon);
+  ctx.fillStyle = palette.title;
   ctx.beginPath();
-  ctx.arc(sx, sy, markerR, 0, Math.PI * 2);
+  ctx.arc(sx0, sy0, markerR, 0, Math.PI * 2);
   ctx.fill();
 
-  // End: filled square
-  const last = tracks[tracks.length - 1].points;
-  const [ex, ey] = toPixel(last[last.length - 1].lat, last[last.length - 1].lon);
-  const sq = markerR * 1.5;
-  ctx.fillRect(ex - sq / 2, ey - sq / 2, sq, sq);
+  if (isMulti) {
+    // Tipi at end of each intermediate stage + label
+    for (let t = 0; t < tracks.length - 1; t++) {
+      const endPt = tracks[t].points[tracks[t].points.length - 1];
+      const [ex, ey] = toPixel(endPt.lat, endPt.lon);
+      drawTipi(ctx, ex, ey - tipiSize * 0.5, tipiSize, palette.title);
+      const city = extractArrivalCity(tracks[t].name);
+      if (city) {
+        drawLabel(ctx, city, ex, ey - tipiSize * 1.6, palette.title, labelSize);
+      }
+    }
+    // End: square on the last track's last point
+    const lastTrack = tracks[tracks.length - 1];
+    const lastPt = lastTrack.points[lastTrack.points.length - 1];
+    const [ex, ey] = toPixel(lastPt.lat, lastPt.lon);
+    const sq = markerR * 1.6;
+    ctx.fillStyle = palette.title;
+    ctx.fillRect(ex - sq / 2, ey - sq / 2, sq, sq);
+  } else {
+    // Single trace: just end square
+    const last = tracks[0].points[tracks[0].points.length - 1];
+    const [ex, ey] = toPixel(last.lat, last.lon);
+    const sq = markerR * 1.6;
+    ctx.fillStyle = palette.title;
+    ctx.fillRect(ex - sq / 2, ey - sq / 2, sq, sq);
+  }
 
-  onProgress(90);
+  prog(75);
+
+  // ── 6. Elevation profile (from bottom, overlaid on hillshade) ──
+  drawProfile(ctx, tracks, palette, font, tipiSize, isMulti);
+
+  // ── 7. Title text (last, always on top) ──
+  await drawTitle(ctx, title || 'Pretty GPX', palette, font);
+
+  prog(100);
 }
 
-// ── Elevation profile zone ────────────────────────────────────────────────────
+// ── Title ────────────────────────────────────────────────────────────────────
+
+async function drawTitle(
+  ctx: CanvasRenderingContext2D,
+  title: string,
+  palette: Palette,
+  font: FontDef
+) {
+  await loadFont(`${font.style} 120px ${font.family}`);
+
+  const cy = POSTER_H * TITLE_Y;
+  let size = Math.round(POSTER_H * TITLE_Y * 0.65);
+  ctx.font = buildFontString(font, size);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  while (ctx.measureText(title).width > POSTER_W * 0.90 && size > 40) {
+    size -= 4;
+    ctx.font = buildFontString(font, size);
+  }
+
+  // Subtle shadow for readability on varied backgrounds
+  ctx.save();
+  ctx.shadowColor = palette.isLight ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur = size * 0.25;
+  ctx.fillStyle = palette.title;
+  ctx.fillText(title, POSTER_W / 2, cy);
+  ctx.restore();
+}
+
+// ── Elevation profile ────────────────────────────────────────────────────────
 
 function drawProfile(
   ctx: CanvasRenderingContext2D,
   tracks: GpxTrack[],
-  profileY: number,
-  profileH: number,
-  palette: Palette
+  palette: Palette,
+  font: FontDef,
+  tipiSize: number,
+  isMulti: boolean
 ) {
-  ctx.fillStyle = palette.profileBg;
-  ctx.fillRect(0, profileY, POSTER_W, profileH);
-
-  const allPts = tracks.flatMap((t) => t.points);
-  const hasEle = allPts.some((p) => p.ele !== 0);
-  const totalDistKm = tracks.reduce((s, t) => s + t.distanceKm, 0);
+  const allPts = tracks.flatMap(t => t.points);
+  const hasEle = allPts.some(p => p.ele !== 0);
+  const totalDistKm  = tracks.reduce((s, t) => s + t.distanceKm, 0);
   const totalEleGain = tracks.reduce((s, t) => s + t.elevationGainM, 0);
 
-  const ELE_FRACTION = 0.52; // portion of profileH used by the silhouette
-  const PAD_H = POSTER_W * 0.06;
-  const PAD_TOP = profileH * 0.05;
-  const areaW = POSTER_W - 2 * PAD_H;
-  const areaH = profileH * ELE_FRACTION;
-  const baseY = profileY + PAD_TOP + areaH;
+  // Profile zone: bottom PROFILE_FRAC of poster
+  const profileTopY = POSTER_H * (1 - PROFILE_FRAC);
+  const baseY = POSTER_H;
+  const areaH = baseY - profileTopY;
 
-  if (hasEle && allPts.length >= 2) {
-    const pts = decimate(allPts, 2000);
+  const padH  = POSTER_W * 0.055;
+  const areaW = POSTER_W - 2 * padH;
 
-    // Cumulative distance
-    const cum: number[] = [0];
-    for (let i = 1; i < pts.length; i++)
-      cum.push(cum[i - 1] + haversineKm(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon));
-    const D = cum[cum.length - 1] || 1;
+  // Cumulative distances (to split per track for multi-trace)
+  const trackCumDist: number[] = [0]; // cumulative dist at start of each track
+  let cum = 0;
+  for (const t of tracks) { cum += t.distanceKm; trackCumDist.push(cum); }
+  const D = cum || 1;
 
-    const eles = pts.map((p) => p.ele);
-    const eMin = Math.min(...eles);
-    const eMax = Math.max(...eles);
-    const eRange = Math.max(eMax - eMin, 1);
+  // Full point array with cumulative distances
+  const pts = decimate(allPts, 2000);
+  const ptCum: number[] = [0];
+  for (let i = 1; i < pts.length; i++) {
+    ptCum.push(ptCum[i - 1] + haversineKm(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon));
+  }
 
-    const toX = (d: number) => PAD_H + (d / D) * areaW;
-    const toY = (e: number) => baseY - ((e - eMin) / eRange) * areaH;
+  const eles = pts.map(p => p.ele);
+  const eMin = hasEle ? Math.min(...eles) : 0;
+  const eMax = hasEle ? Math.max(...eles) : 1;
+  const eRange = Math.max(eMax - eMin, 1);
 
-    // Silhouette fill
+  const toX = (d: number) => padH + (d / D) * areaW;
+  const toY = (e: number) => baseY - ((e - eMin) / eRange) * areaH;
+
+  if (!hasEle) {
+    // Flat profile: just a thin strip at the bottom
+    ctx.fillStyle = hexToRgba(palette.profileFill, 0.85);
+    ctx.fillRect(padH, baseY - areaH * 0.08, areaW, areaH * 0.08);
+  } else {
+    // ── Solid silhouette ──
     ctx.fillStyle = palette.profileFill;
     ctx.beginPath();
     ctx.moveTo(toX(0), baseY);
-    for (let i = 0; i < pts.length; i++) ctx.lineTo(toX(cum[i]), toY(eles[i]));
+    for (let i = 0; i < pts.length; i++) ctx.lineTo(toX(ptCum[i]), toY(eles[i]));
     ctx.lineTo(toX(D), baseY);
     ctx.closePath();
     ctx.fill();
 
-    // Mountain peak markers (triangles at local maxima)
-    const minProm = eRange * 0.07;
-    const minGap = Math.max(10, Math.round(pts.length / 30));
-    const markerSz = Math.round(POSTER_W * 0.007);
-    ctx.fillStyle = palette.title;
-    for (const idx of findPeaks(eles, minProm, minGap)) {
-      drawTriangle(ctx, toX(cum[idx]), toY(eles[idx]) - markerSz * 0.4, markerSz);
+    // ── Contour lines stacked above silhouette (SC4 style) ──
+    const NUM_CONTOURS = 14;
+    const LINE_SPACING = POSTER_W * 0.011; // ~27px at 2480px
+    for (let k = NUM_CONTOURS; k >= 1; k--) {
+      const yShift = k * LINE_SPACING;
+      const alpha = 0.08 + 0.42 * (k / NUM_CONTOURS);
+      ctx.strokeStyle = hexToRgba(palette.profileFill, alpha);
+      ctx.lineWidth = Math.max(2, POSTER_W * 0.0009);
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const x = toX(ptCum[i]);
+        const y = toY(eles[i]) - yShift;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
 
-    // Start dot
-    const dotR = Math.round(POSTER_W * 0.005);
-    ctx.fillStyle = palette.title;
+    // ── Mountain peak triangles ──
+    const minProm = eRange * 0.07;
+    const minGap  = Math.max(8, Math.round(pts.length / 28));
+    const mSz     = Math.round(POSTER_W * 0.008);
+    ctx.fillStyle = palette.statsText;
+    for (const idx of findPeaks(eles, minProm, minGap)) {
+      drawTriangle(ctx, toX(ptCum[idx]), toY(eles[idx]) - mSz * 0.3, mSz);
+    }
+
+    // ── Start dot on profile ──
+    const dotR = Math.round(POSTER_W * 0.006);
+    ctx.fillStyle = palette.statsText;
     ctx.beginPath();
     ctx.arc(toX(0), baseY, dotR, 0, Math.PI * 2);
     ctx.fill();
 
-    // End square
-    const endSq = dotR * 1.6;
+    // ── Tipi markers on profile for multi-trace ──
+    if (isMulti) {
+      const pTipi = Math.round(POSTER_W * 0.011);
+      for (let t = 0; t < tracks.length - 1; t++) {
+        const xPos = toX(trackCumDist[t + 1]);
+        // find closest point index to this distance
+        let closest = 0;
+        let minDiff = Infinity;
+        for (let i = 0; i < ptCum.length; i++) {
+          const diff = Math.abs(ptCum[i] - trackCumDist[t + 1]);
+          if (diff < minDiff) { minDiff = diff; closest = i; }
+        }
+        const yPos = toY(eles[closest]);
+        drawTipi(ctx, xPos, yPos - pTipi * 0.4, pTipi, palette.statsText);
+
+        const city = extractArrivalCity(tracks[t].name);
+        if (city) {
+          ctx.save();
+          ctx.font = `bold ${Math.round(POSTER_W * 0.012)}px 'Lobster', sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = palette.statsText;
+          ctx.fillText(city, xPos, yPos - pTipi * 1.4);
+          ctx.restore();
+        }
+      }
+    }
+
+    // ── End square on profile ──
+    const endSq = dotR * 1.5;
+    ctx.fillStyle = palette.statsText;
     ctx.fillRect(toX(D) - endSq / 2, baseY - endSq / 2, endSq, endSq);
   }
 
-  // Stats text
+  // ── Stats text ──
   const statsText = `${totalDistKm.toFixed(2)} km - ${Math.round(totalEleGain)} m D+`;
-  let fontSize = Math.round(profileH * 0.18);
-  const font = (s: number) => `italic bold ${s}px 'Lobster', cursive`;
-  ctx.font = font(fontSize);
+  let fontSize = Math.round(areaH * 0.22);
+  ctx.font = buildFontString(font, fontSize);
   ctx.textAlign = 'center';
   while (ctx.measureText(statsText).width > POSTER_W * 0.88 && fontSize > 20) {
     fontSize -= 4;
-    ctx.font = font(fontSize);
+    ctx.font = buildFontString(font, fontSize);
   }
   ctx.fillStyle = palette.statsText;
   ctx.textBaseline = 'bottom';
-  ctx.fillText(statsText, POSTER_W / 2, profileY + profileH - Math.round(profileH * 0.05));
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-export async function renderPoster(
-  canvas: HTMLCanvasElement,
-  tracks: GpxTrack[],
-  title: string,
-  palette: Palette,
-  onProgress?: (pct: number) => void
-): Promise<void> {
-  const prog = onProgress ?? (() => {});
-
-  canvas.width = POSTER_W;
-  canvas.height = POSTER_H;
-
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  const titleH = Math.round(POSTER_H * TITLE_RATIO);
-  const mapH   = Math.round(POSTER_H * MAP_RATIO);
-  const profH  = POSTER_H - titleH - mapH;
-  const mapY   = titleH;
-  const profY  = titleH + mapH;
-
-  // Solid background as instant fallback
-  ctx.fillStyle = palette.bg;
-  ctx.fillRect(0, 0, POSTER_W, POSTER_H);
-  prog(2);
-
-  await drawTitle(ctx, title || 'Ma trace GPX', titleH, palette);
-  prog(5);
-
-  if (tracks.length > 0) {
-    await drawMap(ctx, tracks, mapY, mapH, palette, (p) => prog(5 + p * 0.87));
-    drawProfile(ctx, tracks, profY, profH, palette);
-  }
-
-  prog(100);
+  ctx.fillText(statsText, POSTER_W / 2, POSTER_H - Math.round(areaH * 0.04));
 }

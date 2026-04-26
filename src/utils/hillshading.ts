@@ -25,6 +25,16 @@ export function mercatorY(lat: number): number {
   return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2;
 }
 
+/** Inverse Mercator: normalized y [0,1] → latitude in degrees */
+export function normToLat(yNorm: number): number {
+  return ((2 * Math.atan(Math.exp((1 - 2 * yNorm) * Math.PI)) - Math.PI / 2) * 180) / Math.PI;
+}
+
+/** Inverse Mercator: normalized x [0,1] → longitude in degrees */
+export function normToLon(xNorm: number): number {
+  return xNorm * 360 - 180;
+}
+
 function lonToTileX(lon: number, z: number): number {
   return mercatorX(lon) * Math.pow(2, z);
 }
