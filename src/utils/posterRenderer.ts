@@ -64,6 +64,23 @@ function decimate<T>(arr: T[], max: number): T[] {
   return out;
 }
 
+/**
+ * Like decimate() but always preserves the first and last PRESERVE points at full
+ * resolution. This eliminates the "straight diagonal line at the end" artifact
+ * that appears when the last decimated point is far from the actual track end.
+ */
+function decimateWithEndpoints<T>(arr: T[], max: number, preserve = 20): T[] {
+  if (arr.length <= max) return arr;
+  const p = Math.min(preserve, Math.floor(arr.length * 0.05));
+  const head = arr.slice(0, p);
+  const tail = arr.slice(arr.length - p);
+  const mid  = arr.slice(p, arr.length - p);
+  const midMax = Math.max(1, max - 2 * p);
+  if (mid.length <= midMax) return [...head, ...mid, ...tail];
+  const step = Math.ceil(mid.length / midMax);
+  return [...head, ...mid.filter((_, i) => i % step === 0), ...tail];
+}
+
 function hexToRgba(hex: string, a: number): string {
   const h = hex.replace('#', '');
   return `rgba(${parseInt(h.slice(0,2),16)},${parseInt(h.slice(2,4),16)},${parseInt(h.slice(4,6),16)},${a})`;
@@ -256,22 +273,43 @@ export async function renderPoster(
     );
   }
 
-  // ── GPX traces ──
-  ctx.strokeStyle = palette.track;
-  ctx.lineWidth = Math.max(14, Math.round(POSTER_W * 0.0095));
-  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  // ── GPX traces — drawn on offscreen canvas then composited with horizontal edge fade ──
+  // The fade makes the trace blend into the poster edges (like the SC5 reference),
+  // and decimateWithEndpoints() fixes the "straight line at the end" artifact.
+  {
+    const lineW = Math.max(14, Math.round(POSTER_W * 0.0095));
+    const tmp = document.createElement('canvas');
+    tmp.width = POSTER_W; tmp.height = POSTER_H;
+    const tctx = tmp.getContext('2d')!;
+    tctx.strokeStyle = palette.track;
+    tctx.lineWidth = lineW;
+    tctx.lineJoin = 'round'; tctx.lineCap = 'round';
 
-  for (const track of tracks) {
-    const pts = decimate(track.points, 3000);
-    if (pts.length < 2) continue;
-    ctx.beginPath();
-    const [sx, sy] = toPixel(pts[0].lat, pts[0].lon);
-    ctx.moveTo(sx, sy);
-    for (let i = 1; i < pts.length; i++) {
-      const [x, y] = toPixel(pts[i].lat, pts[i].lon);
-      ctx.lineTo(x, y);
+    for (const track of tracks) {
+      const pts = decimateWithEndpoints(track.points, 3000);
+      if (pts.length < 2) continue;
+      tctx.beginPath();
+      const [sx, sy] = toPixel(pts[0].lat, pts[0].lon);
+      tctx.moveTo(sx, sy);
+      for (let i = 1; i < pts.length; i++) {
+        const [x, y] = toPixel(pts[i].lat, pts[i].lon);
+        tctx.lineTo(x, y);
+      }
+      tctx.stroke();
     }
-    ctx.stroke();
+
+    // Apply horizontal edge fade so the trace blends into the poster borders
+    const fade = POSTER_W * 0.055;
+    const grad = tctx.createLinearGradient(0, 0, POSTER_W, 0);
+    grad.addColorStop(0,              'rgba(0,0,0,0)');
+    grad.addColorStop(fade / POSTER_W,'rgba(0,0,0,1)');
+    grad.addColorStop(1 - fade / POSTER_W, 'rgba(0,0,0,1)');
+    grad.addColorStop(1,              'rgba(0,0,0,0)');
+    tctx.globalCompositeOperation = 'destination-in';
+    tctx.fillStyle = grad;
+    tctx.fillRect(0, 0, POSTER_W, POSTER_H);
+
+    ctx.drawImage(tmp, 0, 0);
   }
 
   // ── Stage markers (multi-trace) ──
