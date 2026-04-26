@@ -106,6 +106,13 @@ export default function Index() {
   const [pendingClick, setPendingClick] = useState<{ lat: number; lon: number } | null>(null);
   const [newPoiName,   setNewPoiName]   = useState('');
 
+  // Font size multipliers (1.0 = default)
+  const [titleSizeMult, setTitleSizeMult] = useState(1.0);
+  const [statsSizeMult, setStatsSizeMult] = useState(1.0);
+
+  // Zoom level for canvas preview (when adding POIs)
+  const [canvasZoom, setCanvasZoom] = useState(1.0);
+
   // Render state
   const [isRendering,    setIsRendering]    = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
@@ -135,12 +142,12 @@ export default function Index() {
     const id = ++renderIdRef.current;
     setIsRendering(true); setRenderProgress(0);
     renderPoster(canvasRef.current, tracks, title || tracks[0].name,
-      effectivePalette, font, pois,
+      effectivePalette, font, pois, titleSizeMult, statsSizeMult,
       pct => { if (renderIdRef.current === id) setRenderProgress(pct); }
     ).then(() => {
       if (renderIdRef.current === id) { setIsRendering(false); setRenderProgress(100); }
     });
-  }, [tracks, title, effectivePalette, font, pois]);
+  }, [tracks, title, effectivePalette, font, pois, titleSizeMult, statsSizeMult]);
 
   // ── Auto-fetch POIs when tracks change ──
   useEffect(() => {
@@ -267,23 +274,46 @@ export default function Index() {
 
             {/* Canvas preview */}
             <div className="flex flex-col items-center gap-3">
-              <p className="text-xs text-muted-foreground">
-                {addingType
-                  ? <span className="font-medium text-primary">Cliquez sur la carte pour placer le marqueur ({POI_META[addingType].label})</span>
-                  : 'Aperçu — export 2480 × 3508 px (A4 @ 300 dpi)'}
-              </p>
-              <div className="relative">
-                <canvas
-                  ref={canvasRef} width={POSTER_W} height={POSTER_H}
-                  onClick={handleCanvasClick}
-                  style={{
-                    width: '100%', maxWidth: 420, height: 'auto',
-                    borderRadius: 4, display: 'block',
-                    cursor: addingType ? 'crosshair' : 'default',
-                    boxShadow: '0 12px 48px -8px rgba(0,0,0,0.22)',
-                    outline: addingType ? '3px solid hsl(var(--primary))' : 'none',
-                  }}
-                />
+              <div className="flex items-center gap-3 w-full max-w-[640px]">
+                <p className="text-xs text-muted-foreground flex-1">
+                  {addingType
+                    ? <span className="font-medium text-primary">Cliquez sur la carte pour placer le marqueur ({POI_META[addingType].label})</span>
+                    : 'Aperçu — export 2480 × 3508 px (A4 @ 300 dpi)'}
+                </p>
+                {/* Zoom controls — always visible but especially useful in add-POI mode */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <button type="button" onClick={() => setCanvasZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))}
+                    className="w-7 h-7 rounded border border-border text-sm font-bold hover:bg-muted leading-none">−</button>
+                  <span className="text-xs w-10 text-center text-muted-foreground">{Math.round(canvasZoom * 100)} %</span>
+                  <button type="button" onClick={() => setCanvasZoom(z => Math.min(3, +(z + 0.25).toFixed(2)))}
+                    className="w-7 h-7 rounded border border-border text-sm font-bold hover:bg-muted leading-none">+</button>
+                  {canvasZoom !== 1 && (
+                    <button type="button" onClick={() => setCanvasZoom(1)}
+                      className="text-xs text-muted-foreground hover:text-foreground underline ml-1">reset</button>
+                  )}
+                </div>
+              </div>
+              {/* Scrollable canvas container — scrolls when zoom > 1 */}
+              <div style={{
+                width: '100%', maxWidth: 640,
+                maxHeight: '80vh',
+                overflowX: canvasZoom > 1 ? 'auto' : 'hidden',
+                overflowY: canvasZoom > 1 ? 'auto' : 'hidden',
+                borderRadius: 4,
+                boxShadow: '0 12px 48px -8px rgba(0,0,0,0.22)',
+                outline: addingType ? '3px solid hsl(var(--primary))' : 'none',
+              }}>
+                <div style={{ width: `${Math.round(420 * canvasZoom)}px` }}>
+                  <canvas
+                    ref={canvasRef} width={POSTER_W} height={POSTER_H}
+                    onClick={handleCanvasClick}
+                    style={{
+                      width: '100%', height: 'auto',
+                      borderRadius: canvasZoom <= 1 ? 4 : 0, display: 'block',
+                      cursor: addingType ? 'crosshair' : 'default',
+                    }}
+                  />
+                </div>
                 {isRendering && (
                   <div style={{ position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.35)',borderRadius:4 }}>
                     <Loader2 className="h-8 w-8 text-white animate-spin mb-2" />
@@ -351,8 +381,8 @@ export default function Index() {
                 </div>
               </CardContent></Card>
 
-              {/* Font */}
-              <Card><CardContent className="pt-5 pb-5 space-y-2">
+              {/* Font + size */}
+              <Card><CardContent className="pt-5 pb-5 space-y-3">
                 <Label>Police</Label>
                 <div className="grid grid-cols-3 gap-2">
                   {FONTS.map(f => (
@@ -361,6 +391,20 @@ export default function Index() {
                         font.id === f.id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-muted-foreground'].join(' ')}>
                       {f.name}
                     </button>
+                  ))}
+                </div>
+                <div className="space-y-2 pt-1">
+                  {[
+                    { label: 'Titre', val: titleSizeMult, set: setTitleSizeMult },
+                    { label: 'Stats km / D+', val: statsSizeMult, set: setStatsSizeMult },
+                  ].map(({ label, val, set }) => (
+                    <div key={label} className="flex items-center gap-3">
+                      <span className="text-xs text-muted-foreground w-20 shrink-0">{label}</span>
+                      <input type="range" min={0.5} max={1.8} step={0.05} value={val}
+                        onChange={e => set(parseFloat(e.target.value))}
+                        className="flex-1 accent-primary h-1.5" />
+                      <span className="text-xs text-muted-foreground w-8 text-right">{Math.round(val * 100)} %</span>
+                    </div>
                   ))}
                 </div>
               </CardContent></Card>
