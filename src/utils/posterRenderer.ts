@@ -174,17 +174,27 @@ function drawPoiWithLabel(
   const ly = py + Math.sin(ang) * arrowLen;
 
   ctx.save();
+  ctx.font = `bold ${fontSize}px 'Oswald', Arial, sans-serif`;
+  const textW = ctx.measureText(poi.name).width;
+  const isRight = Math.cos(ang) >= 0;
+
+  // Clamp label so it stays within the poster
+  const margin = fontSize * 0.5;
+  const clampedLX = isRight
+    ? Math.min(lx, POSTER_W - textW - margin)
+    : Math.max(lx, textW + margin);
+  const clampedLY = Math.max(fontSize + margin, Math.min(POSTER_H - fontSize - margin, ly));
+
   ctx.strokeStyle = color;
   ctx.lineWidth = Math.max(2, fontSize * 0.07);
-  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(lx, ly); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(clampedLX, clampedLY); ctx.stroke();
 
-  ctx.font = `bold ${fontSize}px 'Oswald', Arial, sans-serif`;
-  ctx.textAlign = Math.cos(ang) >= 0 ? 'left' : 'right';
+  ctx.textAlign = isRight ? 'left' : 'right';
   ctx.textBaseline = 'middle';
   ctx.shadowColor = 'rgba(0,0,0,0.65)';
   ctx.shadowBlur = fontSize * 0.45;
   ctx.fillStyle = color;
-  ctx.fillText(poi.name, lx, ly);
+  ctx.fillText(poi.name, clampedLX, clampedLY);
   ctx.restore();
 }
 
@@ -197,6 +207,8 @@ export async function renderPoster(
   palette: Palette,
   font: FontDef,
   pois: Poi[],
+  titleSizeMult = 1.0,
+  statsSizeMult = 1.0,
   onProgress?: (pct: number) => void
 ): Promise<void> {
   const prog = onProgress ?? (() => {});
@@ -275,35 +287,17 @@ export async function renderPoster(
   ctx.beginPath(); ctx.arc(sx0, sy0, markerR, 0, Math.PI * 2); ctx.fill();
 
   if (isMulti) {
-    const depart = extractDepartureCity(tracks[0].name);
-    if (depart) {
-      ctx.save();
-      ctx.font = `bold ${labelSz}px 'Oswald', sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-      ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = labelSz * 0.5;
-      ctx.fillStyle = palette.title;
-      ctx.fillText(depart, sx0, sy0 - markerR * 2.2);
-      ctx.restore();
-    }
+    // Icons only — no departure/arrival text labels on the map
     for (let t = 0; t < tracks.length; t++) {
       const endPt = tracks[t].points[tracks[t].points.length - 1];
       const [ex, ey] = toPixel(endPt.lat, endPt.lon);
-      const city = extractArrivalCity(tracks[t].name);
-      const isLast = t === tracks.length - 1;
       ctx.fillStyle = palette.title;
-      if (isLast) {
+      if (t === tracks.length - 1) {
         const sq = markerR * 1.6;
         ctx.fillRect(ex - sq / 2, ey - sq / 2, sq, sq);
       } else {
         drawTipi(ctx, ex, ey - tipiSz * 0.5, tipiSz, palette.title);
       }
-      ctx.save();
-      ctx.font = `bold ${labelSz}px 'Oswald', sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-      ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = labelSz * 0.5;
-      ctx.fillStyle = palette.title;
-      ctx.fillText(city, ex, ey - tipiSz * 1.6);
-      ctx.restore();
     }
   } else {
     const last = tracks[0].points[tracks[0].points.length - 1];
@@ -324,10 +318,10 @@ export async function renderPoster(
   prog(78);
 
   // ── Elevation profile ──
-  drawProfile(ctx, tracks, palette, font, tipiSz, isMulti);
+  drawProfile(ctx, tracks, palette, font, tipiSz, isMulti, statsSizeMult);
 
   // ── Title (last = always on top) ──
-  await drawTitle(ctx, title || 'Pretty GPX', palette, font);
+  await drawTitle(ctx, title || 'Pretty GPX', palette, font, titleSizeMult);
   prog(100);
 }
 
@@ -335,11 +329,11 @@ export async function renderPoster(
 
 async function drawTitle(
   ctx: CanvasRenderingContext2D, title: string,
-  palette: Palette, font: FontDef
+  palette: Palette, font: FontDef, sizeMult = 1.0
 ) {
   await loadFont(`${font.style} 120px ${font.family}`);
   const cy = POSTER_H * TITLE_Y;
-  let size = Math.round(POSTER_H * TITLE_Y * 0.65);
+  let size = Math.round(POSTER_H * TITLE_Y * 0.65 * sizeMult);
   ctx.font = buildFontString(font, size);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   while (ctx.measureText(title).width > POSTER_W * 0.90 && size > 40) {
@@ -361,7 +355,8 @@ function drawProfile(
   palette: Palette,
   font: FontDef,
   tipiSz: number,
-  isMulti: boolean
+  isMulti: boolean,
+  statsSizeMult = 1.0
 ) {
   const allPts = tracks.flatMap(t => t.points);
   const hasEle = allPts.some(p => p.ele !== 0);
@@ -369,9 +364,11 @@ function drawProfile(
   const totalEleGain = tracks.reduce((s, t) => s + t.elevationGainM, 0);
 
   const profileH   = Math.round(POSTER_H * PROFILE_FRAC);  // total zone height
-  // Flat band at very bottom (always filled), variations start above it
-  const varBaseY   = POSTER_H - FLAT_BAND_H;  // baseline for min elevation
-  const varH       = profileH - FLAT_BAND_H;  // height for elevation variations
+  // Flat base band (always filled) — 40 % of profile zone ≈ 2 cm
+  const flatH  = Math.round(profileH * 0.42);
+  // Elevation variations sit on top of the flat band — kept "calm" (30 % of zone)
+  const varH   = Math.round(profileH * 0.32);
+  const varBaseY = POSTER_H - flatH; // elevation minimum maps here
 
   // Cumulative distances per track
   const trackCumDist: number[] = [0];
@@ -396,7 +393,7 @@ function drawProfile(
 
   if (!hasEle) {
     ctx.fillStyle = hexToRgba(palette.profileFill, 0.85);
-    ctx.fillRect(0, varBaseY, POSTER_W, FLAT_BAND_H);
+    ctx.fillRect(0, varBaseY, POSTER_W, flatH);
     return;
   }
 
@@ -409,16 +406,7 @@ function drawProfile(
   ctx.closePath();
   ctx.fill();
 
-  // ── Mountain peak triangles on top of silhouette ──
-  const minProm = eRange * 0.07;
-  const minGap  = Math.max(8, Math.round(pts.length / 28));
-  const mSz     = Math.round(POSTER_W * 0.009);
-  ctx.fillStyle = palette.statsText;
-  for (const idx of findPeaks(eles, minProm, minGap)) {
-    drawTriangle(ctx, toX(ptCum[idx]), toY(eles[idx]) - mSz * 0.3, mSz);
-  }
-
-  // ── Tipi markers at stage boundaries (no labels — labels are on the map) ──
+  // ── Tipi markers at stage boundaries (icons only, no labels) ──
   if (isMulti) {
     const pTipi = Math.round(POSTER_W * 0.011);
     for (let t = 0; t < tracks.length - 1; t++) {
@@ -441,7 +429,7 @@ function drawProfile(
 
   // ── Stats text (inside flat band) ──
   const statsText = `${totalDistKm.toFixed(2)} km - ${Math.round(totalEleGain)} m D+`;
-  let fontSize = Math.round(FLAT_BAND_H * 0.55);
+  let fontSize = Math.round(flatH * 0.55 * statsSizeMult);
   ctx.font = buildFontString(font, fontSize);
   ctx.textAlign = 'center';
   while (ctx.measureText(statsText).width > POSTER_W * 0.88 && fontSize > 20) {
@@ -449,5 +437,5 @@ function drawProfile(
   }
   ctx.fillStyle = palette.statsText;
   ctx.textBaseline = 'middle';
-  ctx.fillText(statsText, POSTER_W / 2, POSTER_H - FLAT_BAND_H / 2);
+  ctx.fillText(statsText, POSTER_W / 2, POSTER_H - flatH / 2);
 }
