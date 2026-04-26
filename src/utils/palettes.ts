@@ -1,21 +1,24 @@
 export interface Palette {
   id: string;
   name: string;
-  /** Full-poster background */
   bg: string;
-  /** GPX track stroke */
   track: string;
-  /** Title text */
   title: string;
-  /** Bottom profile zone background */
-  profileBg: string;
-  /** Elevation silhouette fill */
   profileFill: string;
-  /** Stats text */
   statsText: string;
-  /** true = light bg (Belle Île style), false = dark bg (Écrins style) */
   isLight: boolean;
 }
+
+export interface FontDef {
+  id: string;
+  name: string;
+  /** CSS font-family string used in canvas ctx.font */
+  family: string;
+  /** Prefix added before size + family (e.g. "italic bold") */
+  style: string;
+}
+
+// ── 8 palettes (pretty-gpx inspired) ──────────────────────────────────────
 
 export const PALETTES: Palette[] = [
   {
@@ -24,8 +27,7 @@ export const PALETTES: Palette[] = [
     bg: '#EBF0FA',
     track: '#5B9BD5',
     title: '#1A2B6E',
-    profileBg: '#3D6CB5',
-    profileFill: '#7BAEE0',
+    profileFill: '#4A8FC7',
     statsText: '#FFFFFF',
     isLight: true,
   },
@@ -35,7 +37,6 @@ export const PALETTES: Palette[] = [
     bg: '#264653',
     track: '#2a9d8f',
     title: '#e9c46a',
-    profileBg: '#1a2f39',
     profileFill: '#2a9d8f',
     statsText: '#e9c46a',
     isLight: false,
@@ -46,7 +47,6 @@ export const PALETTES: Palette[] = [
     bg: '#34447d',
     track: '#8390fa',
     title: '#fac748',
-    profileBg: '#1e2a50',
     profileFill: '#8390fa',
     statsText: '#fac748',
     isLight: false,
@@ -57,7 +57,6 @@ export const PALETTES: Palette[] = [
     bg: '#393e41',
     track: '#e94f37',
     title: '#f6f7eb',
-    profileBg: '#1a1d1e',
     profileFill: '#e94f37',
     statsText: '#f6f7eb',
     isLight: false,
@@ -66,13 +65,67 @@ export const PALETTES: Palette[] = [
     id: 'coral',
     name: 'Corail',
     bg: '#bfdbf7',
-    track: '#f87060',
+    track: '#e85040',
     title: '#102542',
-    profileBg: '#3a6fa0',
-    profileFill: '#f87060',
+    profileFill: '#e85040',
     statsText: '#ffffff',
     isLight: true,
+  },
+  {
+    id: 'forest',
+    name: 'Forêt',
+    bg: '#1b4332',
+    track: '#40916c',
+    title: '#d8f3dc',
+    profileFill: '#40916c',
+    statsText: '#d8f3dc',
+    isLight: false,
+  },
+  {
+    id: 'desert',
+    name: 'Désert',
+    bg: '#d4a373',
+    track: '#8b3a3a',
+    title: '#2d1215',
+    profileFill: '#8b3a3a',
+    statsText: '#ffffff',
+    isLight: true,
+  },
+  {
+    id: 'aurora',
+    name: 'Aurore',
+    bg: '#2d1b69',
+    track: '#c084fc',
+    title: '#ede9fe',
+    profileFill: '#c084fc',
+    statsText: '#ede9fe',
+    isLight: false,
   },
 ];
 
 export const DEFAULT_PALETTE = PALETTES[0];
+
+// ── 3 font options ────────────────────────────────────────────────────────
+
+export const FONTS: FontDef[] = [
+  {
+    id: 'lobster',
+    name: 'Lobster',
+    family: "'Lobster', cursive",
+    style: 'italic bold',
+  },
+  {
+    id: 'playfair',
+    name: 'Playfair',
+    family: "'Playfair Display', Georgia, serif",
+    style: 'italic bold',
+  },
+  {
+    id: 'oswald',
+    name: 'Oswald',
+    family: "'Oswald', Arial, sans-serif",
+    style: 'bold',
+  },
+];
+
+export const DEFAULT_FONT = FONTS[0];
