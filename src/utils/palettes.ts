@@ -16,6 +16,14 @@ export interface FontDef {
   family: string;
   /** Prefix added before size + family (e.g. "italic bold") */
   style: string;
+  /**
+   * If true, this font requires the user to upload a font file (.ttf/.woff).
+   * "Regista Regular" is available at whatfontis.com/CF_Regista-Regular but is
+   * not served from a public CDN, so it cannot be loaded via @font-face URL.
+   * The UI will show a file-upload button; the font is registered dynamically
+   * via the FontFace API once the user provides the file.
+   */
+  requiresUpload?: boolean;
 }
 
 // ── 8 palettes (pretty-gpx inspired) ──────────────────────────────────────
@@ -125,6 +133,15 @@ export const FONTS: FontDef[] = [
     name: 'Oswald',
     family: "'Oswald', Arial, sans-serif",
     style: 'bold',
+  },
+  {
+    id: 'regista',
+    name: 'Regista',
+    // The font-family name registered via FontFace API when the user uploads the file.
+    // Falls back to a generic serif until the file is loaded.
+    family: "'Regista', 'Palatino Linotype', serif",
+    style: 'bold',
+    requiresUpload: true,
   },
 ];
 

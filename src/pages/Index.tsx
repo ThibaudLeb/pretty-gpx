@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Upload, Download, ImageIcon, X, Plus, Loader2, ChevronDown, MapPin, Mountain, Tent, Building2, Pencil, Check } from 'lucide-react';
+import { Upload, Download, ImageIcon, X, Plus, Loader2, ChevronDown, Mountain, Tent, Building2, Pencil, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,7 @@ import { PALETTES, DEFAULT_PALETTE, Palette, FONTS, DEFAULT_FONT, FontDef } from
 import { Poi, PoiType, fetchPoisAlongTrack } from '@/utils/overpass';
 import { normToLat, normToLon } from '@/utils/hillshading';
 
-// ── Colour helpers ────────────────────────────────────────────────────────────
+// ── Colour helpers ──────────────────────────────────────────────────────────
 
 function hexLuminance(hex: string): number {
   const h = hex.replace('#', '');
@@ -21,7 +21,7 @@ function hexLuminance(hex: string): number {
   return 0.299*r + 0.587*g + 0.114*b;
 }
 
-// ── Export helpers ────────────────────────────────────────────────────────────
+// ── Export helpers ──────────────────────────────────────────────────────────
 
 function blobDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -71,16 +71,24 @@ async function canvasToPdf(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Blob([out], { type: 'application/pdf' });
 }
 
-// ── POI type metadata ─────────────────────────────────────────────────────────
+// ── POI type metadata ───────────────────────────────────────────────────────
 
 const POI_META: Record<PoiType, { label: string; icon: React.ReactNode; color: string }> = {
-  col:     { label: 'Col',     icon: <Mountain  className="h-3.5 w-3.5" />, color: 'text-sky-600' },
-  summit:  { label: 'Sommet', icon: <Mountain  className="h-3.5 w-3.5" />, color: 'text-indigo-600' },
-  tipi:    { label: 'Refuge', icon: <Tent      className="h-3.5 w-3.5" />, color: 'text-amber-600' },
-  city:    { label: 'Ville',  icon: <Building2 className="h-3.5 w-3.5" />, color: 'text-emerald-600' },
+  col:    { label: 'Col',    icon: <Mountain  className="h-3.5 w-3.5" />, color: 'text-sky-600' },
+  summit: { label: 'Sommet',icon: <Mountain  className="h-3.5 w-3.5" />, color: 'text-indigo-600' },
+  tipi:   { label: 'Refuge',icon: <Tent      className="h-3.5 w-3.5" />, color: 'text-amber-600' },
+  city:   { label: 'Ville', icon: <Building2 className="h-3.5 w-3.5" />, color: 'text-emerald-600' },
 };
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// Priority for keeping the best 10 POIs (lower = higher priority)
+const POI_PRIORITY: Record<PoiType, number> = { col: 1, summit: 2, tipi: 3, city: 4 };
+
+function topPois(all: Poi[], max = 10): Poi[] {
+  const sorted = [...all].sort((a, b) => POI_PRIORITY[a.type] - POI_PRIORITY[b.type]);
+  return sorted.slice(0, max);
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
 
 export default function Index() {
   const [tracks,   setTracks]   = useState<GpxTrack[]>([]);
@@ -94,83 +102,86 @@ export default function Index() {
   const [titleColor, setTitleColor] = useState<string | null>(null);
 
   // POIs
-  const [pois,          setPois]          = useState<Poi[]>([]);
+  const [pois,           setPois]           = useState<Poi[]>([]);
   const [isFetchingPois, setIsFetchingPois] = useState(false);
+  // T3: toggle to show/hide POIs on the poster
+  const [showPois,       setShowPois]       = useState(true);
 
   // Editing POI name inline
-  const [editingPoiId,  setEditingPoiId]  = useState<string | null>(null);
-  const [editingName,   setEditingName]   = useState('');
+  const [editingPoiId, setEditingPoiId] = useState<string | null>(null);
+  const [editingName,  setEditingName]  = useState('');
 
   // Adding new POI by clicking on canvas
   const [addingType,   setAddingType]   = useState<PoiType | null>(null);
   const [pendingClick, setPendingClick] = useState<{ lat: number; lon: number } | null>(null);
   const [newPoiName,   setNewPoiName]   = useState('');
+  // T7: controlled type in the "Nouveau point d'intérêt" modal
+  const [newPoiType,   setNewPoiType]   = useState<PoiType>('col');
 
   // Font size multipliers (1.0 = default)
   const [titleSizeMult, setTitleSizeMult] = useState(1.0);
   const [statsSizeMult, setStatsSizeMult] = useState(1.0);
 
-  // Zoom level for canvas preview (when adding POIs)
+  // Zoom level for canvas preview
   const [canvasZoom, setCanvasZoom] = useState(1.0);
+
+  // T5: Regista custom font upload
+  const [registaLoaded, setRegistaLoaded] = useState(false);
+  const fontUploadRef = useRef<HTMLInputElement>(null);
+
+  // T8: download menu (header + sidebar share state)
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
 
   // Render state
   const [isRendering,    setIsRendering]    = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
-  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
 
-  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const renderIdRef  = useRef(0);
 
-  // ── Effective palette (merges preset + overrides) ──
+  // ── Effective palette ───────────────────────────────────────────────────
   const effectivePalette = useMemo((): Palette => {
     const bg    = bgColor    ?? palette.bg;
     const track = trackColor ?? palette.track;
-    const title = titleColor ?? palette.title;
-    const light = hexLuminance(bg) > 0.5;
-    return { ...palette, bg, track, title, profileFill: track, statsText: title, isLight: light };
+    const ttl   = titleColor ?? palette.title;
+    return { ...palette, bg, track, title: ttl, profileFill: track, statsText: ttl, isLight: hexLuminance(bg) > 0.5 };
   }, [palette, bgColor, trackColor, titleColor]);
 
-  // ── Select preset palette (clears custom overrides) ──
   const selectPalette = (p: Palette) => {
     setPalette(p); setBgColor(null); setTrackColor(null); setTitleColor(null);
   };
 
-  // ── Re-render poster ──
+  // ── Re-render poster ────────────────────────────────────────────────────
   useEffect(() => {
     if (!canvasRef.current || tracks.length === 0) return;
     const id = ++renderIdRef.current;
     setIsRendering(true); setRenderProgress(0);
+    const poisToRender = showPois ? topPois(pois) : [];
     renderPoster(canvasRef.current, tracks, title || tracks[0].name,
-      effectivePalette, font, pois, titleSizeMult, statsSizeMult,
+      effectivePalette, font, poisToRender, titleSizeMult, statsSizeMult,
       pct => { if (renderIdRef.current === id) setRenderProgress(pct); }
     ).then(() => {
       if (renderIdRef.current === id) { setIsRendering(false); setRenderProgress(100); }
     });
-  }, [tracks, title, effectivePalette, font, pois, titleSizeMult, statsSizeMult]);
+  }, [tracks, title, effectivePalette, font, pois, showPois, titleSizeMult, statsSizeMult]);
 
-  // ── Auto-fetch POIs when tracks change ──
+  // ── Auto-fetch POIs when tracks change ──────────────────────────────────
   useEffect(() => {
     if (tracks.length === 0) { setPois([]); return; }
     const allPts = tracks.flatMap(t => t.points);
     const lats = allPts.map(p => p.lat);
     const lons = allPts.map(p => p.lon);
     setIsFetchingPois(true);
-    fetchPoisAlongTrack(
-      Math.min(...lats), Math.max(...lats),
-      Math.min(...lons), Math.max(...lons),
-      allPts
-    ).then(detected => {
-      setPois(prev => {
-        // keep user-added POIs, replace detected ones
-        const userAdded = prev.filter(p => p.userAdded);
-        return [...detected, ...userAdded];
-      });
-      setIsFetchingPois(false);
-    }).catch(() => { setIsFetchingPois(false); });
+    fetchPoisAlongTrack(Math.min(...lats), Math.max(...lats), Math.min(...lons), Math.max(...lons), allPts)
+      .then(detected => {
+        setPois(prev => [...topPois(detected), ...prev.filter(p => p.userAdded)]);
+        setIsFetchingPois(false);
+      })
+      .catch(() => setIsFetchingPois(false));
   }, [tracks]);
 
-  // ── File handling ──
+  // ── File handling ───────────────────────────────────────────────────────
   const processFiles = useCallback(async (files: FileList | File[]) => {
     const gpxFiles = Array.from(files).filter(f => /\.(gpx|xml)$/i.test(f.name));
     if (gpxFiles.length === 0) { toast.error('Veuillez uploader des fichiers .gpx ou .xml'); return; }
@@ -186,13 +197,13 @@ export default function Index() {
     }
   }, [title]);
 
-  const onDragOver  = (e: React.DragEvent) => { e.preventDefault(); };
-  const onDrop = (e: React.DragEvent) => { e.preventDefault(); processFiles(e.dataTransfer.files); };
+  const onDragOver  = (e: React.DragEvent) => e.preventDefault();
+  const onDrop      = (e: React.DragEvent) => { e.preventDefault(); processFiles(e.dataTransfer.files); };
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) processFiles(e.target.files); e.target.value = '';
   };
 
-  // ── Canvas click → add POI ──
+  // ── Canvas click → add POI ──────────────────────────────────────────────
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!addingType || tracks.length === 0) return;
     const canvas = canvasRef.current!;
@@ -203,6 +214,8 @@ export default function Index() {
     if (!mt) return;
     const lon = normToLon(cx / mt.scale + mt.xOrigin);
     const lat = normToLat(cy / mt.scale + mt.yOrigin);
+    // T7: capture the current addingType as the modal default
+    setNewPoiType(addingType);
     setPendingClick({ lat, lon });
     setNewPoiName('');
     setAddingType(null);
@@ -210,28 +223,43 @@ export default function Index() {
 
   const confirmNewPoi = () => {
     if (!pendingClick || !newPoiName.trim()) return;
-    const type = (document.getElementById('new-poi-type') as HTMLSelectElement)?.value as PoiType ?? 'col';
-    const newPoi: Poi = {
+    setPois(prev => [...prev, {
       id: `user-${Date.now()}`,
-      type,
+      type: newPoiType,
       name: newPoiName.trim(),
       lat: pendingClick.lat,
       lon: pendingClick.lon,
       visible: true,
       userAdded: true,
-    };
-    setPois(prev => [...prev, newPoi]);
+    }]);
     setPendingClick(null);
     setNewPoiName('');
   };
 
-  // ── Download ──
+  // ── T5: Load Regista font from uploaded file ────────────────────────────
+  const handleFontUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const face = new FontFace('Regista', buf);
+      await face.load();
+      document.fonts.add(face);
+      setRegistaLoaded(true);
+      toast.success('Police Regista chargée !');
+    } catch {
+      toast.error('Impossible de charger ce fichier de police.');
+    }
+    e.target.value = '';
+  };
+
+  // ── Download ────────────────────────────────────────────────────────────
   const handleDownload = async (format: 'png' | 'jpeg' | 'pdf') => {
     if (!canvasRef.current || tracks.length === 0 || isRendering) return;
     setShowDownloadMenu(false);
     try {
       const slug = safeFilename(title || tracks[0]?.name || 'poster', format);
-      if (format === 'png') blobDownload(await canvasToBlob(canvasRef.current, 'image/png'), slug);
+      if (format === 'png')  blobDownload(await canvasToBlob(canvasRef.current, 'image/png'), slug);
       else if (format === 'jpeg') blobDownload(await canvasToBlob(canvasRef.current, 'image/jpeg', 0.92), slug);
       else { toast.info('Génération du PDF…'); blobDownload(await canvasToPdf(canvasRef.current), safeFilename(title || tracks[0]?.name || 'poster', 'pdf')); }
     } catch { toast.error("Erreur lors de l'export"); }
@@ -239,20 +267,51 @@ export default function Index() {
 
   const totalDistKm  = tracks.reduce((s, t) => s + t.distanceKm, 0);
   const totalEleGain = tracks.reduce((s, t) => s + t.elevationGainM, 0);
+  const hasTrack = tracks.length > 0;
+
+  // ── Download button (reused in header + sidebar) ────────────────────────
+  const DownloadButton = () => (
+    <div className="relative" onClick={e => e.stopPropagation()}>
+      <div className="flex gap-1">
+        <Button size="sm" className="gap-1.5" disabled={isRendering || !hasTrack}
+          onClick={() => handleDownload('png')}>
+          <Download className="h-4 w-4" /> PNG
+        </Button>
+        <Button size="sm" variant="outline" disabled={isRendering || !hasTrack}
+          className="px-2" onClick={() => setShowDownloadMenu(v => !v)}>
+          <ChevronDown className="h-4 w-4" />
+        </Button>
+      </div>
+      {showDownloadMenu && (
+        <div className="absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg z-50 overflow-hidden w-44">
+          {(['png','jpeg','pdf'] as const).map(fmt => (
+            <button key={fmt} type="button"
+              className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors font-medium"
+              onClick={() => handleDownload(fmt)}>
+              {fmt === 'png' ? '🖼  PNG haute-res' : fmt === 'jpeg' ? '📷  JPEG' : '📄  PDF A4'}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50" onClick={() => setShowDownloadMenu(false)}>
-      {/* Header */}
-      <header className="bg-white border-b px-6 py-4">
+      {/* T8 + T4: Sticky header with download button on right */}
+      <header className="bg-white border-b px-6 py-3 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex items-center gap-3">
-          <ImageIcon className="h-5 w-5 text-primary" />
+          <ImageIcon className="h-5 w-5 text-primary shrink-0" />
           <span className="font-semibold tracking-tight">Pretty GPX</span>
           <span className="text-sm text-muted-foreground hidden sm:block">— Poster A4 depuis vos traces GPX</span>
+          <div className="ml-auto">
+            <DownloadButton />
+          </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {tracks.length === 0 ? (
+        {!hasTrack ? (
           /* ── Upload screen ── */
           <div className="flex flex-col items-center justify-center min-h-[72vh]">
             <div
@@ -270,17 +329,17 @@ export default function Index() {
           </div>
         ) : (
           /* ── Editor screen ── */
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_330px] gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_330px] gap-8 items-start">
 
-            {/* Canvas preview */}
-            <div className="flex flex-col items-center gap-3">
+            {/* T4: Canvas column — sticky on large screens */}
+            <div className="flex flex-col items-center gap-3 lg:sticky lg:top-[4.5rem] lg:self-start">
+              {/* Zoom + info bar */}
               <div className="flex items-center gap-3 w-full max-w-[640px]">
                 <p className="text-xs text-muted-foreground flex-1">
                   {addingType
-                    ? <span className="font-medium text-primary">Cliquez sur la carte pour placer le marqueur ({POI_META[addingType].label})</span>
-                    : 'Aperçu — export 2480 × 3508 px (A4 @ 300 dpi)'}
+                    ? <span className="font-medium text-primary">Cliquez sur la carte — {POI_META[addingType].label}</span>
+                    : 'Aperçu — 2480 × 3508 px (A4 @ 300 dpi)'}
                 </p>
-                {/* Zoom controls — always visible but especially useful in add-POI mode */}
                 <div className="flex items-center gap-1 shrink-0">
                   <button type="button" onClick={() => setCanvasZoom(z => Math.max(0.5, +(z - 0.25).toFixed(2)))}
                     className="w-7 h-7 rounded border border-border text-sm font-bold hover:bg-muted leading-none">−</button>
@@ -293,7 +352,8 @@ export default function Index() {
                   )}
                 </div>
               </div>
-              {/* Scrollable canvas container — scrolls when zoom > 1 */}
+
+              {/* T2: Canvas scroll container — inner canvas centred with mx-auto */}
               <div style={{
                 width: '100%', maxWidth: 640,
                 maxHeight: '80vh',
@@ -302,16 +362,19 @@ export default function Index() {
                 borderRadius: 4,
                 boxShadow: '0 12px 48px -8px rgba(0,0,0,0.22)',
                 outline: addingType ? '3px solid hsl(var(--primary))' : 'none',
+                position: 'relative',
               }}>
-                <div style={{ width: `${Math.round(420 * canvasZoom)}px` }}>
+                {/* mx-auto centres the inner div when zoom ≤ 1 (no overflow) */}
+                <div style={{
+                  width: `${Math.round(420 * canvasZoom)}px`,
+                  margin: canvasZoom <= 1 ? '0 auto' : undefined,
+                }}>
                   <canvas
                     ref={canvasRef} width={POSTER_W} height={POSTER_H}
                     onClick={handleCanvasClick}
-                    style={{
-                      width: '100%', height: 'auto',
-                      borderRadius: canvasZoom <= 1 ? 4 : 0, display: 'block',
-                      cursor: addingType ? 'crosshair' : 'default',
-                    }}
+                    style={{ width: '100%', height: 'auto', display: 'block',
+                      borderRadius: canvasZoom <= 1 ? 4 : 0,
+                      cursor: addingType ? 'crosshair' : 'default' }}
                   />
                 </div>
                 {isRendering && (
@@ -327,14 +390,19 @@ export default function Index() {
                 <div className="w-full max-w-[420px] bg-white border rounded-xl p-4 shadow-lg space-y-3">
                   <p className="text-sm font-medium">Nouveau point d'intérêt</p>
                   <div className="flex gap-2">
-                    <select id="new-poi-type" className="border rounded-md px-2 py-1.5 text-sm">
+                    {/* T7: controlled select pre-filled with the type the user clicked */}
+                    <select
+                      value={newPoiType}
+                      onChange={e => setNewPoiType(e.target.value as PoiType)}
+                      className="border rounded-md px-2 py-1.5 text-sm">
                       {(Object.keys(POI_META) as PoiType[]).map(t => (
                         <option key={t} value={t}>{POI_META[t].label}</option>
                       ))}
                     </select>
                     <Input value={newPoiName} onChange={e => setNewPoiName(e.target.value)}
                       placeholder="Nom du point…" className="flex-1"
-                      onKeyDown={e => { if (e.key === 'Enter') confirmNewPoi(); if (e.key === 'Escape') setPendingClick(null); }} autoFocus />
+                      onKeyDown={e => { if (e.key === 'Enter') confirmNewPoi(); if (e.key === 'Escape') setPendingClick(null); }}
+                      autoFocus />
                     <Button size="sm" onClick={confirmNewPoi} disabled={!newPoiName.trim()}>Ajouter</Button>
                     <Button size="sm" variant="outline" onClick={() => setPendingClick(null)}>✕</Button>
                   </div>
@@ -367,9 +435,9 @@ export default function Index() {
                 </div>
                 <div className="space-y-2">
                   {[
-                    { label: 'Fond', val: bgColor ?? effectivePalette.bg, set: setBgColor },
-                    { label: 'Trace', val: trackColor ?? effectivePalette.track, set: setTrackColor },
-                    { label: 'Texte / Profil', val: titleColor ?? effectivePalette.title, set: setTitleColor },
+                    { label: 'Fond',          val: bgColor    ?? effectivePalette.bg,    set: setBgColor },
+                    { label: 'Trace',         val: trackColor ?? effectivePalette.track, set: setTrackColor },
+                    { label: 'Texte / Profil',val: titleColor ?? effectivePalette.title, set: setTitleColor },
                   ].map(({ label, val, set }) => (
                     <div key={label} className="flex items-center gap-3">
                       <input type="color" value={val} onChange={e => set(e.target.value)}
@@ -384,19 +452,39 @@ export default function Index() {
               {/* Font + size */}
               <Card><CardContent className="pt-5 pb-5 space-y-3">
                 <Label>Police</Label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   {FONTS.map(f => (
-                    <button key={f.id} type="button" onClick={() => setFont(f)}
-                      className={['px-3 py-2 rounded-lg border text-sm font-medium transition-all',
-                        font.id === f.id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-muted-foreground'].join(' ')}>
-                      {f.name}
-                    </button>
+                    <div key={f.id} className="flex flex-col gap-1">
+                      <button type="button" onClick={() => setFont(f)}
+                        className={['px-3 py-2 rounded-lg border text-sm font-medium transition-all text-left',
+                          font.id === f.id ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-muted-foreground'].join(' ')}>
+                        {f.name}
+                        {f.requiresUpload && !registaLoaded && (
+                          <span className="text-xs ml-1 text-muted-foreground">(upload requis)</span>
+                        )}
+                        {f.requiresUpload && registaLoaded && (
+                          <span className="text-xs ml-1 text-emerald-600">✓</span>
+                        )}
+                      </button>
+                      {/* T5: Show upload button when Regista is selected and not yet loaded */}
+                      {f.requiresUpload && font.id === f.id && !registaLoaded && (
+                        <div className="flex items-center gap-2">
+                          <input ref={fontUploadRef} type="file" accept=".ttf,.otf,.woff,.woff2"
+                            className="hidden" onChange={handleFontUpload} />
+                          <button type="button"
+                            onClick={() => fontUploadRef.current?.click()}
+                            className="text-xs px-2 py-1 border rounded hover:bg-muted transition-colors w-full">
+                            Uploader Regista (.ttf / .woff)
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
                 <div className="space-y-2 pt-1">
                   {[
-                    { label: 'Titre', val: titleSizeMult, set: setTitleSizeMult },
-                    { label: 'Stats km / D+', val: statsSizeMult, set: setStatsSizeMult },
+                    { label: 'Titre',       val: titleSizeMult, set: setTitleSizeMult },
+                    { label: 'Stats km/D+', val: statsSizeMult, set: setStatsSizeMult },
                   ].map(({ label, val, set }) => (
                     <div key={label} className="flex items-center gap-3">
                       <span className="text-xs text-muted-foreground w-20 shrink-0">{label}</span>
@@ -445,17 +533,23 @@ export default function Index() {
               {/* Points d'intérêt */}
               <Card><CardContent className="pt-5 pb-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <Label className="flex items-center gap-1.5">
-                    Points d'intérêt
-                    {isFetchingPois && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-                  </Label>
+                  <div className="flex items-center gap-2">
+                    {/* T3: toggle to show/hide POIs */}
+                    <input type="checkbox" id="show-pois" checked={showPois}
+                      onChange={e => setShowPois(e.target.checked)}
+                      className="rounded" />
+                    <Label htmlFor="show-pois" className="flex items-center gap-1.5 cursor-pointer">
+                      Sommets, villes, cols
+                      {isFetchingPois && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                    </Label>
+                  </div>
                   <button type="button" className="text-xs text-muted-foreground hover:text-primary underline"
                     onClick={() => {
                       const allPts = tracks.flatMap(t => t.points);
                       const lats = allPts.map(p => p.lat); const lons = allPts.map(p => p.lon);
                       setIsFetchingPois(true);
                       fetchPoisAlongTrack(Math.min(...lats),Math.max(...lats),Math.min(...lons),Math.max(...lons),allPts)
-                        .then(d => { setPois(prev => [...d, ...prev.filter(p => p.userAdded)]); setIsFetchingPois(false); })
+                        .then(d => { setPois([...topPois(d), ...pois.filter(p => p.userAdded)]); setIsFetchingPois(false); })
                         .catch(() => setIsFetchingPois(false));
                     }}>
                     Rafraîchir
@@ -478,7 +572,8 @@ export default function Index() {
                 <ul className="space-y-1 max-h-52 overflow-y-auto pr-1">
                   {pois.length === 0 && !isFetchingPois && (
                     <li className="text-xs text-muted-foreground py-2 text-center">
-                      Aucun point détecté — chargez une trace GPX
+                      {/* T6: updated empty state message */}
+                      Cliquez sur la carte pour ajouter un nouveau point d'intérêt
                     </li>
                   )}
                   {pois.map(poi => (
@@ -487,7 +582,6 @@ export default function Index() {
                         onChange={e => setPois(prev => prev.map(p => p.id === poi.id ? {...p, visible: e.target.checked} : p))}
                         className="shrink-0" />
                       <span className={POI_META[poi.type].color}>{POI_META[poi.type].icon}</span>
-
                       {editingPoiId === poi.id ? (
                         <input autoFocus value={editingName}
                           onChange={e => setEditingName(e.target.value)}
@@ -499,19 +593,17 @@ export default function Index() {
                       ) : (
                         <span className="flex-1 truncate">{poi.name}</span>
                       )}
-
                       {editingPoiId === poi.id ? (
-                        <button type="button" className="text-primary" onClick={() => {
-                          setPois(prev => prev.map(p => p.id === poi.id ? {...p, name: editingName} : p));
-                          setEditingPoiId(null);
-                        }}><Check className="h-3.5 w-3.5" /></button>
+                        <button type="button" className="text-primary"
+                          onClick={() => { setPois(prev => prev.map(p => p.id === poi.id ? {...p, name: editingName} : p)); setEditingPoiId(null); }}>
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
                       ) : (
                         <button type="button" className="text-muted-foreground hover:text-foreground"
                           onClick={() => { setEditingPoiId(poi.id); setEditingName(poi.name); }}>
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
                       )}
-
                       <button type="button" className="text-muted-foreground hover:text-destructive"
                         onClick={() => setPois(prev => prev.filter(p => p.id !== poi.id))}>
                         <X className="h-3.5 w-3.5" />
@@ -521,14 +613,14 @@ export default function Index() {
                 </ul>
               </CardContent></Card>
 
-              {/* Download */}
+              {/* Sidebar download (secondary, full-format picker) */}
               <div className="relative" onClick={e => e.stopPropagation()}>
                 <div className="flex gap-1">
-                  <Button size="lg" className="flex-1 gap-2" disabled={isRendering || tracks.length === 0}
+                  <Button size="lg" className="flex-1 gap-2" disabled={isRendering || !hasTrack}
                     onClick={() => handleDownload('png')}>
                     <Download className="h-5 w-5" /> Télécharger PNG
                   </Button>
-                  <Button size="lg" variant="outline" disabled={isRendering || tracks.length === 0}
+                  <Button size="lg" variant="outline" disabled={isRendering || !hasTrack}
                     className="px-3" onClick={() => setShowDownloadMenu(v => !v)}>
                     <ChevronDown className="h-4 w-4" />
                   </Button>
@@ -537,7 +629,7 @@ export default function Index() {
                   <div className="absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg z-10 overflow-hidden w-44">
                     {(['png','jpeg','pdf'] as const).map(fmt => (
                       <button key={fmt} type="button"
-                        className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors uppercase tracking-wide font-medium"
+                        className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors font-medium"
                         onClick={() => handleDownload(fmt)}>
                         {fmt === 'png' ? '🖼  PNG haute-res' : fmt === 'jpeg' ? '📷  JPEG' : '📄  PDF A4'}
                       </button>
@@ -546,7 +638,8 @@ export default function Index() {
                 )}
               </div>
 
-              <Button variant="outline" className="w-full" onClick={() => { setTracks([]); setTitle(''); setPois([]); }}>
+              <Button variant="outline" className="w-full"
+                onClick={() => { setTracks([]); setTitle(''); setPois([]); }}>
                 Recommencer
               </Button>
             </div>
